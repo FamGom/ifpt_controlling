@@ -99,7 +99,15 @@ class FinanzControllingWidget(QWidget):
             self.table_gesamt.setRowCount(0)
             
             for projekt in projekte:
-                report = generiere_projekt_controlling(session, projekt.id, heute)
+                try:
+                    report = generiere_projekt_controlling(session, projekt.id, heute)
+                except ValueError as e:
+                    # HARTER CHECK: Schlägt an, wenn System- oder Tarifdaten in DB fehlen!
+                    QMessageBox.critical(self, f"Stammdaten-Fehler in Projekt: {projekt.projektname}", str(e))
+                    self.table_gesamt.setRowCount(0)
+                    self.table_jahr.setRowCount(0)
+                    return # Bricht das Laden ab, bis der User das Problem behebt
+                    
                 self.aktuelle_reports.append(report)
                 self.aktuelle_projekte.append(projekt)
                 
@@ -134,6 +142,14 @@ class FinanzControllingWidget(QWidget):
         
         for projekt, report in zip(self.aktuelle_projekte, self.aktuelle_reports):
             if not projekt.projektbeginn or not projekt.projektende: continue
+            
+            # ==============================================================
+            # FIX: Projekte komplett ausblenden, wenn sie im Zieljahr nicht laufen!
+            # Verhindert, dass alte Defizite in ferner Zukunft auftauchen.
+            # ==============================================================
+            if ziel_jahr < projekt.projektbeginn.year or ziel_jahr > projekt.projektende.year:
+                continue
+
             start_m = projekt.projektbeginn.year * 12 + projekt.projektbeginn.month
             end_m = projekt.projektende.year * 12 + projekt.projektende.month
             monate_gesamt = end_m - start_m + 1
@@ -176,6 +192,7 @@ class FinanzControllingWidget(QWidget):
                 self.table_jahr.setItem(row_idx, col_idx, item)
 
 
+    
 # ==========================================
 # MODUL 2: PERSONAL-CONTROLLING (Soll vs. Ist)
 # ==========================================

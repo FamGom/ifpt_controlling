@@ -4,7 +4,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QTableWidget, QTableWidgetItem, QComboBox, QSpinBox, 
                              QHeaderView, QLabel, QMessageBox, QDialog, QFormLayout, 
                              QDateEdit, QDoubleSpinBox, QDialogButtonBox, QTabWidget,
-                             QMenu)
+                             QMenu, QTextEdit, QCheckBox)
+from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt, QDate
 
 from core.database import get_session
@@ -200,7 +201,7 @@ class MatrixListView(QWidget):
                 session.close()
 
 # ==========================================
-# ANSI 2: GANTT-MATRIX (MIT INTELLIGENTER SUMMIERUNG)
+# ANSI 2: GANTT-MATRIX (MIT LIVE-REPORTING)
 # ==========================================
 class MatrixGanttView(QWidget):
     def __init__(self):
@@ -222,10 +223,7 @@ class MatrixGanttView(QWidget):
         try:
             for m in session.query(Mitarbeiter).all():
                 self.mitarbeiter_liste.append(m)
-                
-                # Wir laden alle Teilzeit-Modelle dieses Mitarbeiters
                 az_verlaeufe = session.query(Arbeitszeitverlauf).filter_by(mitarbeiter_id=m.id).all()
-                
                 self.mitarbeiter_daten[m.id] = {
                     "start": m.am_ifpt_seit,
                     "end": m.geplanter_abgang,
@@ -240,20 +238,31 @@ class MatrixGanttView(QWidget):
         finally:
             session.close()
 
-    def get_target_capacity(self, ma_id, check_date):
-        """Ermittelt die individuelle Ziel-Auslastung (z.B. 50% bei Teilzeit) für einen bestimmten Monat."""
+    def compress_months(self, month_list):
+        if not month_list: return []
+        def parse_m(s):
+            m, y = s.split('/')
+            return int(y) * 12 + int(m)
+        sorted_m = sorted(month_list, key=parse_m)
+        ranges, start, last = [], sorted_m[0], sorted_m[0]
+        
+        for current in sorted_m[1:]:
+            if parse_m(current) == parse_m(last) + 1:
+                last = current
+            else:
+                ranges.append((start, last))
+                start, last = current, current
+        ranges.append((start, last))
+        return [f"{s} - {e}" if s != e else s for s, e in ranges]
+
+    def get_actual_hr_capacity(self, ma_id, check_date):
         if not ma_id or ma_id not in self.mitarbeiter_daten: return 100.0
         az_verlaeufe = self.mitarbeiter_daten[ma_id]["arbeitszeiten"]
-        
-        # Den letzten Tag des Monats für die Prüfung verwenden
         check_end_date = date(check_date.year, check_date.month, calendar.monthrange(check_date.year, check_date.month)[1])
-        
         for az in az_verlaeufe:
             if az.gueltig_ab <= check_end_date:
                 if not az.gueltig_bis or az.gueltig_bis >= check_date:
-                    return az.anteil_pct * 100.0
-        
-        # Standard: 100%
+                    return az.anteil_pct * 100.0 
         return 100.0
 
     def setup_ui(self):
@@ -267,21 +276,32 @@ class MatrixGanttView(QWidget):
         toolbar_time.addWidget(QLabel("Bis:")); toolbar_time.addWidget(self.spin_end)
         toolbar_time.addWidget(btn_apply); toolbar_time.addStretch()
         layout.addLayout(toolbar_time)
-
+        
         toolbar_actions = QHBoxLayout()
         btn_add = QPushButton("➕ Neue Zeile"); btn_add.clicked.connect(self.add_matrix_row)
-        btn_val = QPushButton("🔍 Matrix auswerten (Fehler & Lücken)")
-        btn_val.setStyleSheet("background-color: #E67E22; color: white; font-weight: bold;")
-        btn_val.clicked.connect(self.validate_and_report)
         btn_save = QPushButton("💾 Speichern")
         btn_save.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
         btn_save.clicked.connect(self.save_matrix)
-        toolbar_actions.addWidget(btn_add); toolbar_actions.addWidget(btn_val); toolbar_actions.addWidget(btn_save)
+        
+        self.check_live = QCheckBox("Live-Prüfung & Reporting (Auto-Berechnung)")
+        self.check_live.setChecked(True)
+        self.check_live.toggled.connect(self.validate_and_report)
+        
+        toolbar_actions.addWidget(btn_add)
+        toolbar_actions.addWidget(self.check_live)
+        toolbar_actions.addWidget(btn_save)
         toolbar_actions.addStretch()
         layout.addLayout(toolbar_actions)
-
+        
         self.table = QTableWidget()
         layout.addWidget(self.table)
+        
+        self.report_box = QTextEdit()
+        self.report_box.setReadOnly(True)
+        self.report_box.setMaximumHeight(150)
+        self.report_box.setStyleSheet("background-color: #F8F9F9; border: 1px solid #BDC3C7;")
+        layout.addWidget(self.report_box)
+        
         self.apply_time_range()
 
     def apply_time_range(self):
@@ -289,7 +309,7 @@ class MatrixGanttView(QWidget):
         self.start_jahr = self.spin_start.value()
         self.end_jahr = self.spin_end.value()
         if self.start_jahr > self.end_jahr: return
-        self.spalten_namen = ["MA-Name", "Status", "Anteil %", "Zell-Info"]
+        self.spalten_namen = ["MA-Name", "Status", "Plan-Anteil %", "Zell-Info"]
         for jahr in range(self.start_jahr, self.end_jahr + 1):
             for monat in range(1, 13):
                 self.spalten_namen.append(f"{monat:02d}/{str(jahr)[-2:]}")
@@ -299,6 +319,7 @@ class MatrixGanttView(QWidget):
         self.table.setHorizontalHeaderLabels(self.spalten_namen)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         for i in range(4, len(self.spalten_namen)): self.table.setColumnWidth(i, 90)
         self.load_matrix_from_db()
 
@@ -322,7 +343,7 @@ class MatrixGanttView(QWidget):
                 return
             zeilen_daten = {} 
             for z in zuweisungen:
-                key = (z.mitarbeiter_id, z.typ, int(z.anteil_pct * 100))
+                key = (z.mitarbeiter_id, z.typ, round(z.anteil_pct * 100, 2))
                 if key not in zeilen_daten: zeilen_daten[key] = {col: None for col in range(4, 4 + self.monate_gesamt)}
                 for col in range(4, 4 + self.monate_gesamt):
                     col_date = self.get_date_from_col(col)
@@ -341,7 +362,7 @@ class MatrixGanttView(QWidget):
                 if self.table.cellWidget(r, c) == widget: return r, c
         return -1, -1
 
-    def add_matrix_row(self, ma_id=None, typ=ZuweisungsTyp.PLANUNG, anteil=100, monate_daten=None):
+    def add_matrix_row(self, ma_id=None, typ=ZuweisungsTyp.PLANUNG, anteil=100.0, monate_daten=None):
         row = self.table.rowCount()
         self.table.insertRow(row)
         
@@ -357,11 +378,17 @@ class MatrixGanttView(QWidget):
         if idx_typ >= 0: c_status.setCurrentIndex(idx_typ)
         self.table.setCellWidget(row, 1, c_status)
         
-        s_anteil = QSpinBox(); s_anteil.setRange(1, 100); s_anteil.setValue(anteil)
+        s_anteil = QDoubleSpinBox()
+        s_anteil.setRange(0.0, 100.0)
+        s_anteil.setDecimals(2)
+        s_anteil.setValue(anteil)
+        s_anteil.setSuffix(" %")
         s_anteil.valueChanged.connect(self.validate_matrix)
         self.table.setCellWidget(row, 2, s_anteil)
         
-        self.table.setItem(row, 3, QTableWidgetItem(""))
+        item_info = QTableWidgetItem("")
+        item_info.setForeground(Qt.GlobalColor.gray)
+        self.table.setItem(row, 3, item_info)
         
         monats_combos = []
         for col in range(4, 4 + self.monate_gesamt):
@@ -374,7 +401,7 @@ class MatrixGanttView(QWidget):
             c_proj.customContextMenuRequested.connect(lambda pos, cb=c_proj: self.show_context_menu_combo(pos, cb))
             self.table.setCellWidget(row, col, c_proj)
             monats_combos.append(c_proj)
-            
+                
         c_status.currentIndexChanged.connect(lambda _, m_cb=monats_combos, c_s=c_status, c_m=c_ma: self.update_row_projects(m_cb, c_s, c_m))
         c_ma.currentIndexChanged.connect(lambda _, m_cb=monats_combos, c_s=c_status, c_m=c_ma: self.update_row_projects(m_cb, c_s, c_m))
 
@@ -391,7 +418,6 @@ class MatrixGanttView(QWidget):
             if m_end and col_date > m_end:
                 combo.setToolTip("Gesperrt: Hat Institut verlassen.")
                 return 
-
         for p in self.projekte_alle:
             if p["start"] > col_end_date or p["end"] < col_date: continue
             if row_typ == ZuweisungsTyp.VERTRAG and p["status"] != ProjektStatus.BEWILLIGT: continue
@@ -448,11 +474,9 @@ class MatrixGanttView(QWidget):
                 last_idx = i
         self.validate_matrix()
 
-    # --- DIE MAGIE: Summierung, 100%-Prüfung & Saubere Lücken ---
     def validate_matrix(self):
-        farben = ["#5DADE2", "#58D68D", "#F4D03F", "#EB984E", "#AF7AC5"] 
+        farben = ["#5DADE2", "#58D68D", "#F4D03F", "#EB984E", "#AF7AC5"]          
         
-        # 1. Wir aggregieren alle Zeilen (Prozente) für jeden MA und Monat
         ma_monthly_sums = {}
         for row in range(self.table.rowCount()):
             ma_id = self.table.cellWidget(row, 0).currentData()
@@ -464,16 +488,26 @@ class MatrixGanttView(QWidget):
                 if self.table.cellWidget(row, col).currentData() is not None:
                     ma_monthly_sums[ma_id][col] += anteil
 
-        # 2. Visuelles Update der Blöcke
         for row in range(self.table.rowCount()):
             ma_id = self.table.cellWidget(row, 0).currentData()
             
-            m_start, limit_6j = None, None
+            m_start, commitment_end = None, None
             if ma_id and ma_id in self.mitarbeiter_daten:
                 m_start = self.mitarbeiter_daten[ma_id]["start"]
+                m_abgang = self.mitarbeiter_daten[ma_id]["end"]
                 if m_start:
                     try: limit_6j = date(m_start.year + 6, m_start.month, m_start.day)
                     except ValueError: limit_6j = date(m_start.year + 6, m_start.month, 28)
+                    commitment_end = m_abgang if m_abgang and m_abgang < limit_6j else limit_6j
+
+                # --- ZELL-INFO FÜLLEN (Nur noch als Basis-Info, Fehler kommen per Ticker) ---
+                hr_capacity = self.get_actual_hr_capacity(ma_id, date.today())
+                info_text = f"Vertrag: {hr_capacity:.1f}%"
+                if commitment_end:
+                    info_text += f" | Zusage bis: {commitment_end.strftime('%m/%Y')}"
+                self.table.item(row, 3).setText(info_text)
+            else:
+                self.table.item(row, 3).setText("")
 
             proj_farben = {}; f_idx = 0
             for col in range(4, 4 + self.monate_gesamt):
@@ -483,10 +517,10 @@ class MatrixGanttView(QWidget):
                 pid_rechts = self.table.cellWidget(row, col+1).currentData() if col < 3+self.monate_gesamt else None
                 
                 col_date = self.get_date_from_col(col)
-                is_over_6j = limit_6j and col_date >= limit_6j
+                is_in_commitment = m_start and commitment_end and (m_start <= col_date < commitment_end)
                 
-                # Ziel-Auslastung (Standard 100%, kann durch Teilzeit 50% sein)
-                target_pct = self.get_target_capacity(ma_id, col_date)
+                # ZIEL IST IMMER 100% (Verteilung der VERFÜGBAREN Zeit)
+                target_pct = 100.0 
                 actual_sum = ma_monthly_sums.get(ma_id, {}).get(col, 0)
 
                 if pid:
@@ -501,30 +535,37 @@ class MatrixGanttView(QWidget):
                     elif pid == pid_rechts: border_css = "border-top: 1px solid #777; border-bottom: 1px solid #777; border-left: 1px solid #777; border-right: none;"
                     
                     tooltip = ""
-                    
-                    # ÜBERBUCHUNG / UNTERDECKUNG VISUALISIEREN
                     if actual_sum > target_pct + 0.1:
-                        border_css = "border: 2px solid #E74C3C;" # Rot für überbucht
+                        border_css = "border: 2px solid #E74C3C;"
                         tooltip = f"⚠️ ÜBERBUCHT! Summe: {actual_sum} % (Ziel: {target_pct} %)\n"
                     elif actual_sum < target_pct - 0.1:
-                        border_css = "border: 2px solid #F1C40F;" # Gelb für teil-gebucht
+                        border_css = "border: 2px solid #F1C40F;"
                         tooltip = f"⚠️ UNTERDECKUNG! Summe: {actual_sum} % (Ziel: {target_pct} %)\n"
-                    
-                    if is_over_6j:
-                        border_css += " border-style: dashed;" # Gestrichelt = Weiches 6-Jahre-Fenster
-                        tooltip += "Info: Befindet sich außerhalb des 6-Jahre-Fensters (WissZeitVG)."
                         
                     combo.setStyleSheet(f"QComboBox {{ background-color: {farbe}; color: #000000; {border_css} margin: 0px; font-weight: bold; }}")
                     combo.setToolTip(tooltip.strip())
                 else:
-                    combo.setStyleSheet("")
-                    combo.setToolTip("")
+                    if is_in_commitment and actual_sum == 0:
+                        combo.setStyleSheet("QComboBox { background-color: #FDEDEC; border: 1px dashed #E74C3C; margin: 1px; }")
+                        combo.setToolTip("⚠️ Ungedeckter Bedarf (Finanzierungs-Zusage)")
+                    else:
+                        combo.setStyleSheet("")
+                        combo.setToolTip("")
                     
+        if hasattr(self, 'check_live') and self.check_live.isChecked():
+            self.validate_and_report(ma_monthly_sums=ma_monthly_sums)
+            
         return ma_monthly_sums
 
-    def validate_and_report(self):
-        """Erzeugt einen detaillierten Report über echte Lücken, Überbuchungen und auslaufende Verträge."""
-        ma_monthly_sums = self.validate_matrix()
+    def validate_and_report(self, checked=True, ma_monthly_sums=None):
+        if not hasattr(self, 'report_box'): return
+        
+        show_live = self.check_live.isChecked()
+        self.report_box.setVisible(show_live)
+        
+        if ma_monthly_sums is None:
+            ma_monthly_sums = self.validate_matrix()
+            return 
         
         heute = date.today()
         m_limit = heute.month + 6
@@ -532,10 +573,12 @@ class MatrixGanttView(QWidget):
         if m_limit > 12: m_limit -= 12; y_limit += 1
         limit_6_monate = date(y_limit, m_limit, calendar.monthrange(y_limit, m_limit)[1])
 
-        report_luecken = []     # Echte Lücken (zwischen Projekten)
-        report_urgent_end = []  # Läuft in den nächsten 6 Monaten aus
-        report_info_end = []    # Läuft irgendwann später aus
-        report_kapazitaet = []  # Überbucht oder unterdeckt (aber > 0)
+        report_luecken = []     
+        report_urgent_end = []  
+        report_kapazitaet = []  
+        report_urgent_ungedeckt = [] 
+        report_info_ungedeckt = []   
+        report_info_end = [] 
         
         untersuchte_mas = set([self.table.cellWidget(r, 0).currentData() for r in range(self.table.rowCount()) if self.table.cellWidget(r, 0).currentData()])
             
@@ -543,79 +586,133 @@ class MatrixGanttView(QWidget):
             if ma_id not in self.mitarbeiter_daten: continue
             m_name = self.mitarbeiter_daten[ma_id]["name"]
             
-            # Alle Spalten sammeln, in denen der MA > 0% gebucht ist
+            m_start = self.mitarbeiter_daten[ma_id]["start"]
+            m_abgang = self.mitarbeiter_daten[ma_id]["end"]
+            commitment_end = None
+            if m_start:
+                try: limit_6j = date(m_start.year + 6, m_start.month, m_start.day)
+                except ValueError: limit_6j = date(m_start.year + 6, m_start.month, 28)
+                commitment_end = m_abgang if m_abgang and m_abgang < limit_6j else limit_6j
+            
             active_cols = [c for c, summe in ma_monthly_sums.get(ma_id, {}).items() if summe > 0]
-            if not active_cols: continue
             
-            first_col = min(active_cols)
-            last_col = max(active_cols)
+            urg_ungedeckt_cols = []
+            info_ungedeckt_cols = []
             
-            gaps = []
-            
-            for col in range(first_col, last_col): # Prüft NUR dazwischen!
-                if col not in active_cols:
-                    gaps.append(self.spalten_namen[col])
-                    
-            if gaps:
-                report_luecken.append((m_name, gaps))
-                
-            # Prüfen auf Über/Unterbuchung
-            kap_fehler = []
-            for col in active_cols:
-                actual = ma_monthly_sums[ma_id][col]
+            for col in range(4, 4 + self.monate_gesamt):
                 col_date = self.get_date_from_col(col)
-                target = self.get_target_capacity(ma_id, col_date)
-                
-                if actual > target + 0.1:
-                    kap_fehler.append(f"{self.spalten_namen[col]}: Überbucht ({actual}% statt {target}%)")
-                elif actual < target - 0.1:
-                    kap_fehler.append(f"{self.spalten_namen[col]}: Unterdeckt ({actual}% statt {target}%)")
+                # Ungedeckt Check innerhalb der Bringschuld
+                if m_start and commitment_end and (m_start <= col_date < commitment_end):
+                    if ma_monthly_sums.get(ma_id, {}).get(col, 0) == 0:
+                        if col_date <= limit_6_monate: urg_ungedeckt_cols.append(self.spalten_namen[col])
+                        else: info_ungedeckt_cols.append(self.spalten_namen[col])
             
-            if kap_fehler:
-                report_kapazitaet.append((m_name, kap_fehler))
+            if urg_ungedeckt_cols: report_urgent_ungedeckt.append((m_name, self.compress_months(urg_ungedeckt_cols)))
+            if info_ungedeckt_cols: report_info_ungedeckt.append((m_name, self.compress_months(info_ungedeckt_cols)))
 
-            # Vertragsende prüfen (Der Monat NACH der letzten Buchung)
-            if last_col < (4 + self.monate_gesamt - 1):
-                auslauf_col = last_col + 1
-                col_date = self.get_date_from_col(auslauf_col)
-                col_end_date = date(col_date.year, col_date.month, calendar.monthrange(col_date.year, col_date.month)[1])
+            gaps = []
+            kap_fehler = []
+            is_urgent_end = False
+            is_info_end = False
+            
+            if active_cols:
+                first_col = min(active_cols)
+                last_col = max(active_cols)
                 
-                # Ist der Mitarbeiter da überhaupt noch angestellt?
-                m_end = self.mitarbeiter_daten[ma_id]["end"]
-                if not m_end or col_date <= m_end:
-                    if col_end_date <= limit_6_monate:
-                        report_urgent_end.append((m_name, self.spalten_namen[auslauf_col]))
-                    else:
-                        report_info_end.append((m_name, self.spalten_namen[auslauf_col]))
+                for col in range(first_col, last_col):
+                    if col not in active_cols: gaps.append(self.spalten_namen[col])
+                if gaps: report_luecken.append((m_name, self.compress_months(gaps)))
+                    
+                for col in active_cols:
+                    actual = ma_monthly_sums[ma_id][col]
+                    target = 100.0
+                    if actual > target + 0.1: kap_fehler.append(f"{self.spalten_namen[col]}: {actual}%")
+                    elif actual < target - 0.1: kap_fehler.append(f"{self.spalten_namen[col]}: {actual}%")
+                if kap_fehler: report_kapazitaet.append((m_name, kap_fehler))
+
+                if last_col < (4 + self.monate_gesamt - 1):
+                    auslauf_col = last_col + 1
+                    col_date = self.get_date_from_col(auslauf_col)
+                    col_end_date = date(col_date.year, col_date.month, calendar.monthrange(col_date.year, col_date.month)[1])
+                    if not m_abgang or col_date <= m_abgang:
+                        if col_end_date <= limit_6_monate: 
+                            report_urgent_end.append((m_name, self.spalten_namen[auslauf_col]))
+                            is_urgent_end = True
+                        else: 
+                            report_info_end.append((m_name, self.spalten_namen[auslauf_col]))
+                            is_info_end = True
+
+            # --- ZELL-INFO LOGIK (Der persönliche Ticker) ---
+            short_error = "✅ OK"
+            error_color = "#27AE60"
+            
+            if urg_ungedeckt_cols:
+                short_error = "⚠️ Ungedeckt (<6M)"
+                error_color = "#E74C3C"
+            elif gaps:
+                short_error = "⚠️ Plan-Lücke"
+                error_color = "#E67E22"
+            elif is_urgent_end:
+                short_error = "⚠️ Endet <6M"
+                error_color = "#E67E22"
+            elif kap_fehler:
+                short_error = "⚠️ Anteil != 100%"
+                error_color = "#C0392B"
+            elif info_ungedeckt_cols:
+                short_error = "ℹ️ Ungedeckt (>6M)"
+                error_color = "#F39C12"
+            elif is_info_end:
+                short_error = "ℹ️ Endet regulär"
+                error_color = "#7F8C8D"
                 
-        # --- BERICHT AUSGEBEN ---
-        if not report_luecken and not report_urgent_end and not report_kapazitaet and not report_info_end:
-            QMessageBox.information(self, "Alles OK!", "✅ Perfekt! Keine Lücken, keine Überbuchungen.")
+            # Die primäre Stammdaten-Info wieder dazuschreiben
+            hr_capacity = self.get_actual_hr_capacity(ma_id, date.today())
+            base_info = f"Az: {hr_capacity:.0f}%"
+            
+            for r in range(self.table.rowCount()):
+                if self.table.cellWidget(r, 0).currentData() == ma_id:
+                    info_item = self.table.item(r, 3)
+                    if info_item:
+                        info_item.setText(f"{base_info} | {short_error}")
+                        info_item.setForeground(QColor(error_color))
+
+        if not show_live: return
+
+        if not any([report_luecken, report_urgent_end, report_kapazitaet, report_urgent_ungedeckt, report_info_ungedeckt]):
+            self.report_box.setStyleSheet("background-color: #E8F8F5; color: #1E8449; border: 1px solid #27AE60; padding: 5px;")
+            self.report_box.setText("✅ Alles OK! Die sichtbare Planungsmatrix deckt alle Zusagen, enthält keine Lücken und keine Überbuchungen.")
             return
             
         msg = ""
+        # KRITISCH: Oben
+        if report_urgent_ungedeckt:
+            msg += "⚠️ AKUTER UNGEDECKTER BEDARF (Zusage-Lücke in den nächsten 6 Monaten):\n"
+            for m, errs in report_urgent_ungedeckt: msg += f"👤 {m}: Finanzierung fehlt für {', '.join(errs)}\n"
+            msg += "\n"
         if report_luecken:
-            msg += "🚨 ECHTE LÜCKEN (Monate ohne Vertrag zwischen zwei Projekten):\n"
+            msg += "⚠️ ECHTE LÜCKEN (Planungslücke zwischen zwei Projekten):\n"
             for m, gaps in report_luecken: msg += f"👤 {m}: Fehlt in {', '.join(gaps)}\n"
             msg += "\n"
-            
         if report_urgent_end:
-            msg += "⚠️ DRINGEND: Auslaufende Finanzierung (In den nächsten 6 Monaten):\n"
-            for m, month in report_urgent_end: msg += f"👤 {m}: Kein Vertrag mehr ab {month}\n"
+            msg += "⚠️ DRINGEND: Auslaufende Projektfinanzierung (< 6 Monate):\n"
+            for m, month in report_urgent_end: msg += f"👤 {m}: Endet planmäßig ab {month}\n"
             msg += "\n"
-            
         if report_kapazitaet:
-            msg += "⚖️ KAPAZITÄTSFEHLER (Überbuchung oder Unterdeckung):\n"
-            for m, errors in report_kapazitaet: 
-                msg += f"👤 {m}:\n"
-                for e in errors: msg += f"   - {e}\n"
+            msg += "⚠️ KAPAZITÄTSFEHLER (Matrix-Planung != 100%):\n"
+            for m, errors in report_kapazitaet: msg += f"👤 {m}: " + " | ".join(errors) + "\n"
             msg += "\n"
             
+        # INFO: Unten
+        if report_info_ungedeckt:
+            msg += "ℹ️ INFO: Zukünftiger ungedeckter Bedarf (> 6 Monate):\n"
+            for m, errs in report_info_ungedeckt: msg += f"👤 {m}: Finanzierung fehlt für {', '.join(errs)}\n"
+            msg += "\n"
         if report_info_end:
-            msg += "ℹ️ INFO: Auslaufende Verträge (Zukunft, kein direkter Handlungsbedarf):\n"
-            for m, month in report_info_end: msg += f"👤 {m}: Endet planmäßig in {month}\n"
+            msg += "ℹ️ INFO: Auslaufende Verträge in ferner Zukunft (> 6 Monate):\n"
+            for m, month in report_info_end: msg += f"👤 {m}: Endet planmäßig ab {month}\n"
             
-        QMessageBox.warning(self, "Controlling Report", msg)
+        self.report_box.setStyleSheet("background-color: #FDEDEC; color: #C0392B; border: 1px solid #E74C3C; padding: 5px;")
+        self.report_box.setText(msg.strip())
 
     def save_matrix(self):
         session = get_session()
@@ -625,14 +722,12 @@ class MatrixGanttView(QWidget):
                 Zuweisung.end_datum <= date(self.end_jahr, 12, 31),
                 Zuweisung.typ.in_([ZuweisungsTyp.VERTRAG, ZuweisungsTyp.PLANUNG])
             ).delete()
-
             for row in range(self.table.rowCount()):
                 ma_id = self.table.cellWidget(row, 0).currentData()
                 if not ma_id: continue
                 typ = self.table.cellWidget(row, 1).currentData()
                 anteil = self.table.cellWidget(row, 2).value() / 100.0
                 current_pid = None; start_col = None
-
                 for col in range(4, 5 + self.monate_gesamt):
                     pid = self.table.cellWidget(row, col).currentData() if col < 4 + self.monate_gesamt else None
                     if pid != current_pid:
@@ -642,9 +737,7 @@ class MatrixGanttView(QWidget):
                             end_date = date(end_date_temp.year, end_date_temp.month, calendar.monthrange(end_date_temp.year, end_date_temp.month)[1])
                             session.add(Zuweisung(mitarbeiter_id=ma_id, projekt_id=current_pid, typ=typ, anteil_pct=anteil, start_datum=start_date, end_datum=end_date))
                         current_pid = pid; start_col = col
-
             session.commit()
-            QMessageBox.information(self, "Gespeichert", "Planungs-Matrix gespeichert!")
             self.apply_time_range() 
         finally:
             session.close()
