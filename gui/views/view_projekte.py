@@ -4,6 +4,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
                              QMessageBox, QDialog, QFormLayout, QLineEdit, 
                              QDateEdit, QDoubleSpinBox, QDialogButtonBox, QComboBox)
 from PyQt6.QtCore import Qt, QDate
+from PyQt6.QtGui import QColor
+
 from core.database import get_session
 from core.models import Projekt, ProjektStatus, Abrechnungsart
 
@@ -27,6 +29,15 @@ class ProjektBearbeitenDialog(QDialog):
         for s in ProjektStatus:
             self.combo_status.addItem(s.value, s)
         layout.addRow("Projekt-Status:", self.combo_status)
+
+        self.spin_wahrscheinlichkeit = QDoubleSpinBox()
+        self.spin_wahrscheinlichkeit.setRange(0.0, 100.0)
+        self.spin_wahrscheinlichkeit.setDecimals(1)
+        self.spin_wahrscheinlichkeit.setSuffix(" %")
+        layout.addRow("Bewilligungswahrscheinlichkeit:", self.spin_wahrscheinlichkeit)
+        
+        # Komfort-Automatik: Status ändert Wahrscheinlichkeit
+        self.combo_status.currentIndexChanged.connect(self.auto_set_wahrscheinlichkeit)
         
         self.combo_abrechnung = QComboBox()
         for a in Abrechnungsart:
@@ -125,6 +136,11 @@ class ProjektBearbeitenDialog(QDialog):
                 verbleib = getattr(p, "restmittel_verbleib_typ", "Rückzahlung an Zuwendungsgeber")
                 idx_v = self.combo_verbleib.findText(verbleib)
                 if idx_v >= 0: self.combo_verbleib.setCurrentIndex(idx_v)
+
+                # Beim Laden auslesen (Harter Absturz-Schutz, falls None)
+                prob = getattr(p, "bewilligungswahrscheinlichkeit_pct", 100.0)
+                if prob is None: prob = 100.0
+                self.spin_wahrscheinlichkeit.setValue(prob)
         finally:
             session.close()
 
@@ -155,7 +171,7 @@ class ProjektBearbeitenDialog(QDialog):
             
             p.tatsaechliche_rueckzahlung = self.spin_rueckzahlung.value()
             p.restmittel_verbleib_typ = self.combo_verbleib.currentText()
-            
+            p.bewilligungswahrscheinlichkeit_pct = self.spin_wahrscheinlichkeit.value()
             session.commit()
             self.accept()
         except Exception as e:
@@ -163,6 +179,17 @@ class ProjektBearbeitenDialog(QDialog):
             QMessageBox.critical(self, "Fehler", f"Konnte Projekt nicht speichern:\n{str(e)}")
         finally:
             session.close()
+
+    def auto_set_wahrscheinlichkeit(self):  
+        status = self.combo_status.currentData()
+        if status == ProjektStatus.BEWILLIGT:
+            self.spin_wahrscheinlichkeit.setValue(100.0)
+        elif status == ProjektStatus.ABGELEHNT:
+            self.spin_wahrscheinlichkeit.setValue(0.0)
+        elif status == ProjektStatus.BEANTRAGT:
+            self.spin_wahrscheinlichkeit.setValue(50.0)
+        else:
+            self.spin_wahrscheinlichkeit.setValue(100.0)  # Default
 
 class ProjekteView(QWidget):
     def __init__(self):
@@ -176,7 +203,7 @@ class ProjekteView(QWidget):
         title = QLabel("Projekt- & Budgetverwaltung")
         title.setProperty("title", "true")
         main_layout.addWidget(title)
-
+        
         toolbar = QHBoxLayout()
         btn_add = QPushButton("➕ Neues Projekt")
         btn_add.setStyleSheet("background-color: #27AE60; color: white; font-weight: bold; padding: 6px;")
@@ -199,13 +226,15 @@ class ProjekteView(QWidget):
         toolbar.addStretch()
         toolbar.addWidget(btn_refresh)
         main_layout.addLayout(toolbar)
-
+        
         self.table = QTableWidget()
-        self.spalten = ["ID", "Projektname", "Status", "Laufzeit", "Budget (Personal)", "Sachmittel", "Overhead"]
+        # NEU: Spalte "Chance" eingefügt
+        self.spalten = ["ID", "Projektname", "Status", "Chance", "Laufzeit", "Budget (Personal)", "Sachmittel", "Overhead"]
         self.table.setColumnCount(len(self.spalten))
         self.table.setHorizontalHeaderLabels(self.spalten)
         self.table.setColumnHidden(0, True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.doubleClicked.connect(self.projekt_bearbeiten)
         
@@ -213,6 +242,7 @@ class ProjekteView(QWidget):
 
     def format_euro(self, amount):
         return f"{amount:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+
 
     def load_projekte(self):
         session = get_session()
@@ -233,13 +263,21 @@ class ProjekteView(QWidget):
                     status_item.setForeground(Qt.GlobalColor.red)
                 self.table.setItem(row, 2, status_item)
                 
+                # NEU: Wahrscheinlichkeit anzeigen
+                prob = getattr(p, "bewilligungswahrscheinlichkeit_pct", 100.0)
+                if prob is None: prob = 100.0
+                prob_item = QTableWidgetItem(f"{prob:.0f} %")
+                prob_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if prob < 100.0: prob_item.setForeground(QColor("#8E44AD"))
+                self.table.setItem(row, 3, prob_item)
+                
                 laufzeit = f"{p.projektbeginn.strftime('%m/%Y')} - {p.projektende.strftime('%m/%Y')}"
-                self.table.setItem(row, 3, QTableWidgetItem(laufzeit))
+                self.table.setItem(row, 4, QTableWidgetItem(laufzeit))
                 
                 pers_bud = (p.personalbudget_e1_e12 or 0) + (p.personalbudget_e13_e15 or 0) + (p.personalbudget_besch_entgelt or 0)
-                self.table.setItem(row, 4, QTableWidgetItem(self.format_euro(pers_bud)))
-                self.table.setItem(row, 5, QTableWidgetItem(self.format_euro(p.sachmittelbudget or 0)))
-                self.table.setItem(row, 6, QTableWidgetItem(f"{p.overhead_pct} %"))
+                self.table.setItem(row, 5, QTableWidgetItem(self.format_euro(pers_bud)))
+                self.table.setItem(row, 6, QTableWidgetItem(self.format_euro(p.sachmittelbudget or 0)))
+                self.table.setItem(row, 7, QTableWidgetItem(f"{p.overhead_pct} %"))
         finally:
             session.close()
 

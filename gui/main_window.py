@@ -9,6 +9,7 @@ from gui.views.view_projekte import ProjekteView
 from gui.views.view_mitarbeiter import MitarbeiterView
 from gui.views.view_system import SystemAdminMainView
 from gui.views.view_settings import SettingsView
+from gui.views.view_vakanzen import VakanzenView
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -25,6 +26,7 @@ class MainWindow(QMainWindow):
         # Die Haupt-Ansichten initialisieren
         self.tab_controlling = ControllingView()
         self.tab_matrix = MatrixMainView()
+        self.tab_vakanzen = VakanzenView()
         self.tab_ist_abweichungen = IstAbweichungenView()
         self.tab_projekte = ProjekteView()
         self.tab_mitarbeiter = MitarbeiterView()
@@ -34,14 +36,23 @@ class MainWindow(QMainWindow):
         # Tabs dem Fenster in logischer Prozess-Reihenfolge hinzufügen
         self.tabs.addTab(self.tab_controlling, "📊 Controlling & Dashboards")
         self.tabs.addTab(self.tab_matrix, "📅 Personal-Projekt-Matrix")
+        self.tabs.addTab(self.tab_vakanzen, "⚖️ Vakanzen & Instituts-Steuerung")
         self.tabs.addTab(self.tab_ist_abweichungen, "⏱️ Ist-Abweichungen erfassen")
         self.tabs.addTab(self.tab_projekte, "📂 Projekt-Verwaltung")
         self.tabs.addTab(self.tab_mitarbeiter, "👥 Mitarbeiter-Stammdaten")
         self.tabs.addTab(self.tab_admin, "⚙️ System & Administration")
         self.tabs.addTab(self.tab_settings, "🎨 Design & Einstellungen")
 
+
+        self.tabs.currentChanged.connect(self.on_tab_changed)
         # Menüleiste aufbauen
         self._create_menu()
+
+    def on_tab_changed(self, index):
+        """Prüft, ob der angeklickte Tab eine load_data Methode hat und führt sie aus."""
+        widget = self.tabs.widget(index)
+        if hasattr(widget, 'load_data'):
+            widget.load_data()
 
     def _create_menu(self):
         menubar = self.menuBar()

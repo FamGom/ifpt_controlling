@@ -1,16 +1,20 @@
+import calendar
 from PyQt6.QtWidgets import (QMessageBox, QWidget, QVBoxLayout, QLabel, QTableWidget, 
                              QTableWidgetItem, QHeaderView, QPushButton, 
                              QHBoxLayout, QComboBox, QSplitter, QTabWidget, 
-                             QDateEdit, QSpinBox, QRadioButton)
+                             QDateEdit, QSpinBox, QRadioButton, QCheckBox, QFormLayout, QDoubleSpinBox)
 from PyQt6.QtCore import Qt, QDate
+from PyQt6.QtGui import QColor
+
 from datetime import date
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
 from core.database import get_session
-from core.models import Projekt, Zuweisung, ZuweisungsTyp, ProjektStatus
+from core.models import Projekt, Zuweisung, ZuweisungsTyp, ProjektStatus, Mitarbeiter, Abrechnungsart
 from core.calculations import generiere_projekt_controlling 
+from core.journal import generiere_mitarbeiter_lohnjournal 
 
 # ==========================================
 # MODUL 1: FINANZ-CONTROLLING 
@@ -483,7 +487,6 @@ class GraphControllingWidget(QWidget):
                 if status_filter == 0:
                     projekte = [p for p in projekte if p.status == ProjektStatus.BEWILLIGT]
                 
-                # Dieselbe Überschneidungs-Logik für das Portfolio-Budget
                 projekte = [p for p in projekte if p.projektbeginn and p.projektende and p.projektende.year >= f_start and p.projektbeginn.year <= f_end]
                 
                 if projekte:
@@ -497,10 +500,15 @@ class GraphControllingWidget(QWidget):
                     self.spin_start.blockSignals(False); self.spin_end.blockSignals(False)
                     
                     for p in projekte:
-                        b_e13 += getattr(p, "personalbudget_e13_e15", 0.0) or 0.0
-                        b_e12 += getattr(p, "personalbudget_e1_e12", 0.0) or 0.0
-                        b_hiwi += getattr(p, "personalbudget_besch_entgelt", 0.0) or 0.0
-                        b_sach += getattr(p, "sachmittelbudget", 0.0) or 0.0
+                        # NEU: Wahrscheinlichkeit anwenden
+                        prob = getattr(p, "bewilligungswahrscheinlichkeit_pct", 100.0)
+                        if prob is None: prob = 100.0
+                        faktor = prob / 100.0
+                        
+                        b_e13 += (getattr(p, "personalbudget_e13_e15", 0.0) or 0.0) * faktor
+                        b_e12 += (getattr(p, "personalbudget_e1_e12", 0.0) or 0.0) * faktor
+                        b_hiwi += (getattr(p, "personalbudget_besch_entgelt", 0.0) or 0.0) * faktor
+                        b_sach += (getattr(p, "sachmittelbudget", 0.0) or 0.0) * faktor
             else:
                 p = session.query(Projekt).filter_by(projektname=projekt_data["projekt"]).first()
                 if p:
@@ -509,10 +517,14 @@ class GraphControllingWidget(QWidget):
                         self.spin_start.setValue(p.projektbeginn.year); self.spin_end.setValue(p.projektende.year)
                         self.spin_start.blockSignals(False); self.spin_end.blockSignals(False)
                     
-                    b_e13 = getattr(p, "personalbudget_e13_e15", 0.0) or 0.0
-                    b_e12 = getattr(p, "personalbudget_e1_e12", 0.0) or 0.0
-                    b_hiwi = getattr(p, "personalbudget_besch_entgelt", 0.0) or 0.0
-                    b_sach = getattr(p, "sachmittelbudget", 0.0) or 0.0
+                    prob = getattr(p, "bewilligungswahrscheinlichkeit_pct", 100.0)
+                    if prob is None: prob = 100.0
+                    faktor = prob / 100.0
+                    
+                    b_e13 = (getattr(p, "personalbudget_e13_e15", 0.0) or 0.0) * faktor
+                    b_e12 = (getattr(p, "personalbudget_e1_e12", 0.0) or 0.0) * faktor
+                    b_hiwi = (getattr(p, "personalbudget_besch_entgelt", 0.0) or 0.0) * faktor
+                    b_sach = (getattr(p, "sachmittelbudget", 0.0) or 0.0) * faktor
             
             self.tabs.setTabVisible(2, b_e13 > 0)
             self.tabs.setTabVisible(3, b_e12 > 0)
@@ -558,19 +570,22 @@ class GraphControllingWidget(QWidget):
                         continue
                     if not (p.projektbeginn and p.projektende and p.projektende.year >= f_start and p.projektbeginn.year <= f_end):
                         continue
-                    
-                gefilterte_reports.append(r)
                 
-                b_e12 = getattr(p, "personalbudget_e1_e12", 0.0) or 0.0
-                b_e13 = getattr(p, "personalbudget_e13_e15", 0.0) or 0.0
-                b_hiwi = getattr(p, "personalbudget_besch_entgelt", 0.0) or 0.0
-                b_sach = getattr(p, "sachmittelbudget", 0.0) or 0.0
+                prob = getattr(p, "bewilligungswahrscheinlichkeit_pct", 100.0)
+                if prob is None: prob = 100.0
+                faktor = prob / 100.0
+                
+                # Wir übergeben den Faktor an die Kosten-Auswertung
+                gefilterte_reports.append((r, faktor))
+                
+                b_e12 = (getattr(p, "personalbudget_e1_e12", 0.0) or 0.0) * faktor
+                b_e13 = (getattr(p, "personalbudget_e13_e15", 0.0) or 0.0) * faktor
+                b_hiwi = (getattr(p, "personalbudget_besch_entgelt", 0.0) or 0.0) * faktor
+                b_sach = (getattr(p, "sachmittelbudget", 0.0) or 0.0) * faktor
                 
                 p_bud = 0.0
-                if ansicht_key == "gesamt": 
-                    p_bud = b_e12 + b_e13 + b_hiwi + b_sach
-                elif ansicht_key == "personal_gesamt": 
-                    p_bud = b_e12 + b_e13 + b_hiwi
+                if ansicht_key == "gesamt": p_bud = b_e12 + b_e13 + b_hiwi + b_sach
+                elif ansicht_key == "personal_gesamt": p_bud = b_e12 + b_e13 + b_hiwi
                 elif ansicht_key == "e13_15": p_bud = b_e13
                 elif ansicht_key == "e1_12": p_bud = b_e12
                 elif ansicht_key == "hiwi": p_bud = b_hiwi
@@ -605,7 +620,7 @@ class GraphControllingWidget(QWidget):
             if isinstance(tup_or_float, tuple): return tup_or_float[idx]
             return tup_or_float if tup_or_float is not None else 0.0
 
-        for r in gefilterte_reports:
+        for r, faktor in gefilterte_reports:
             for mv in r.get("monats_verlauf", []):
                 monat = mv["monat"]
                 if monat not in alle_monate: continue
@@ -617,12 +632,12 @@ class GraphControllingWidget(QWidget):
                 elif ansicht_key == "personal_gesamt": toepfe = ["e13_15", "e1_12", "hiwi"]
                     
                 for t in toepfe:
-                    ist_cf_reihe[monat] += safe_get(det["ist"].get(t, (0.0, 0.0)), 0)
-                    ist_ctrl_reihe[monat] += safe_get(det["ist"].get(t, (0.0, 0.0)), 1)
-                    obligo_cf_reihe[monat] += safe_get(det["obligo"].get(t, (0.0, 0.0)), 0)
-                    obligo_ctrl_reihe[monat] += safe_get(det["obligo"].get(t, (0.0, 0.0)), 1)
-                    plan_cf_reihe[monat] += safe_get(det["plan"].get(t, (0.0, 0.0)), 0)
-                    plan_ctrl_reihe[monat] += safe_get(det["plan"].get(t, (0.0, 0.0)), 1)
+                    ist_cf_reihe[monat] += safe_get(det["ist"].get(t, (0.0, 0.0)), 0) * faktor
+                    ist_ctrl_reihe[monat] += safe_get(det["ist"].get(t, (0.0, 0.0)), 1) * faktor
+                    obligo_cf_reihe[monat] += safe_get(det["obligo"].get(t, (0.0, 0.0)), 0) * faktor
+                    obligo_ctrl_reihe[monat] += safe_get(det["obligo"].get(t, (0.0, 0.0)), 1) * faktor
+                    plan_cf_reihe[monat] += safe_get(det["plan"].get(t, (0.0, 0.0)), 0) * faktor
+                    plan_ctrl_reihe[monat] += safe_get(det["plan"].get(t, (0.0, 0.0)), 1) * faktor
 
         rest_ist, rest_obligo, rest_plan, monats_balken, budget_linie = [], [], [], [], []
         laufendes_max_budget = budget_kumuliert_start
@@ -679,7 +694,225 @@ class GraphControllingWidget(QWidget):
         self.figure.tight_layout()
         self.canvas.draw()
 
+
+# ==========================================
+# MODUL 4: SZENARIO-PLANUNG (LIQUIDITÄT)
+# ==========================================
+class SzenarioGraphWidget(QWidget):
+    """Interaktives Tool zur Simulation von Einnahmen, Ausgaben und 6-Jahres-Obligos."""
+    def __init__(self, controlling_view_parent):
+        super().__init__()
+        self.main_view = controlling_view_parent
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
         
+        info = QLabel("<b>Liquiditäts-Szenarien:</b> Schalten Sie Einnahmen und Ausgaben hinzu, um zu simulieren, wann das Institut unterfinanziert ist.")
+        info.setStyleSheet("color: #7F8C8D; margin-bottom: 10px;")
+        layout.addWidget(info)
+        
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(QLabel("<b>Zeitraum:</b>"))
+        self.spin_start = QSpinBox(); self.spin_start.setRange(2020, 2060); self.spin_start.setValue(date.today().year)
+        toolbar.addWidget(self.spin_start)
+        toolbar.addWidget(QLabel("bis"))
+        self.spin_end = QSpinBox(); self.spin_end.setRange(2020, 2060); self.spin_end.setValue(date.today().year + 3)
+        toolbar.addWidget(self.spin_end)
+        
+        toolbar.addSpacing(20)
+        self.cb_beantragt = QCheckBox("➕ Einnahmen: Beantragte Projekte (gewichtet) einbeziehen")
+        self.cb_plan = QCheckBox("➖ Ausgaben: Weiche Matrix-Planungen einbeziehen")
+        self.cb_6j = QCheckBox("➖ Ausgaben: Ungedeckte 6-Jahres-Zusagen (WissZeitVG) abziehen")
+        
+        # Standard-Szenario: Worst-Case (Nur sicheres Geld, aber alle Versprechen)
+        self.cb_beantragt.setChecked(False)
+        self.cb_plan.setChecked(True)
+        self.cb_6j.setChecked(True)
+        
+        toolbar.addWidget(self.cb_beantragt)
+        toolbar.addWidget(self.cb_plan)
+        toolbar.addWidget(self.cb_6j)
+        
+        btn_calc = QPushButton("🚀 Szenario berechnen")
+        btn_calc.setStyleSheet("background-color: #8E44AD; color: white; font-weight: bold; padding: 5px 15px;")
+        btn_calc.clicked.connect(self.berechne_und_zeichne)
+        toolbar.addStretch()
+        toolbar.addWidget(btn_calc)
+        
+        layout.addLayout(toolbar)
+        
+        self.figure = Figure(figsize=(10, 5), dpi=100)
+        self.canvas = FigureCanvas(self.figure)
+        layout.addWidget(self.canvas)
+
+    def berechne_und_zeichne(self):
+        start_y, end_y = self.spin_start.value(), self.spin_end.value()
+        if start_y > end_y: return
+        
+        alle_monate = [f"{m:02d}/{y}" for y in range(start_y, end_y + 1) for m in range(1, 13)]
+        if not alle_monate: return
+
+        session = get_session()
+        heute = date.today()
+        
+        # Container für die Zeitreihen
+        budget_zufluss = {m: 0.0 for m in alle_monate}
+        ausgaben_fix = {m: 0.0 for m in alle_monate}  # Ist + Obligo
+        ausgaben_plan = {m: 0.0 for m in alle_monate} # Nur Planung
+        ausgaben_6j = {m: 0.0 for m in alle_monate}   # Ungedeckter Bedarf
+        
+        start_kapital = 0.0 # Kumuliertes Budget aus Vorjahren
+        start_kosten = 0.0  # Kumulierte Kosten aus Vorjahren
+        
+        try:
+            # --- 1. PROJEKTE (Budgets & Matrix-Kosten) ---
+            projekte = session.query(Projekt).all()
+            for p in projekte:
+                if not p.status or p.status == ProjektStatus.ABGELEHNT: continue
+                
+                # Checkbox-Weiche für Einnahmen
+                if p.status == ProjektStatus.BEANTRAGT and not self.cb_beantragt.isChecked():
+                    continue
+                    
+                prob = getattr(p, "bewilligungswahrscheinlichkeit_pct", 100.0) or 100.0
+                p_budget = (
+                    (p.personalbudget_e1_e12 or 0) + 
+                    (p.personalbudget_e13_e15 or 0) + 
+                    (p.personalbudget_besch_entgelt or 0) + 
+                    (p.sachmittelbudget or 0)
+                ) * (prob / 100.0)
+                
+                # Zufluss einbuchen (Budget steht ab Projektbeginn zur Verfügung)
+                if p.projektbeginn:
+                    m_str = f"{p.projektbeginn.month:02d}/{p.projektbeginn.year}"
+                    if m_str in budget_zufluss:
+                        budget_zufluss[m_str] += p_budget
+                    elif p.projektbeginn.year < start_y:
+                        start_kapital += p_budget
+                
+                # Kosten aus dem Controlling-Report holen
+                try: report = generiere_projekt_controlling(session, p.id, heute)
+                except ValueError: continue
+                
+                for mv in report.get("monats_verlauf", []):
+                    m_str = mv["monat"]
+                    # Wir addieren Ist + Obligo
+                    k_fix = mv.get("ist_kosten_ctrl", 0.0) + mv.get("obligo", 0.0)
+                    k_plan = mv.get("plan_kosten", 0.0)
+                    
+                    if m_str in ausgaben_fix:
+                        ausgaben_fix[m_str] += k_fix
+                        ausgaben_plan[m_str] += k_plan
+                    else:
+                        m_y = int(m_str.split('/')[1])
+                        if m_y < start_y:
+                            start_kosten += k_fix + (k_plan if self.cb_plan.isChecked() else 0.0)
+
+            # --- 2. 6-JAHRES-VAKANZEN (Instituts-Obligo) ---
+            if self.cb_6j.isChecked():
+                mitarbeiter_liste = session.query(Mitarbeiter).all()
+                zuweisungen = session.query(Zuweisung).filter(
+                    Zuweisung.end_datum >= date(start_y, 1, 1),
+                    Zuweisung.start_datum <= date(end_y, 12, 31)
+                ).all()
+                
+                # Zuweisungen aggregieren
+                ma_deckung = {}
+                for z in zuweisungen:
+                    if z.mitarbeiter_id not in ma_deckung: ma_deckung[z.mitarbeiter_id] = {m: 0.0 for m in alle_monate}
+                    start_m_abs = z.start_datum.year * 12 + z.start_datum.month
+                    end_m_abs = z.end_datum.year * 12 + z.end_datum.month
+                    for m_abs in range(start_m_abs, end_m_abs + 1):
+                        y = m_abs // 12
+                        m = m_abs % 12
+                        if m == 0: y -= 1; m = 12
+                        m_str = f"{m:02d}/{y}"
+                        if m_str in alle_monate:
+                            # Wenn Plan-Checkbox aus ist, ignorieren wir Plan-Zuweisungen bei der Deckung!
+                            if z.typ == ZuweisungsTyp.PLANUNG and not self.cb_plan.isChecked(): continue
+                            ma_deckung[z.mitarbeiter_id][m_str] += z.anteil_pct
+
+                # Lücken berechnen
+                for ma in mitarbeiter_liste:
+                    if not ma.am_ifpt_seit: continue
+                    try: limit_6j = date(ma.am_ifpt_seit.year + 6, ma.am_ifpt_seit.month, ma.am_ifpt_seit.day)
+                    except ValueError: limit_6j = date(ma.am_ifpt_seit.year + 6, ma.am_ifpt_seit.month, 28)
+                    commitment_end = ma.geplanter_abgang if (ma.geplanter_abgang and ma.geplanter_abgang < limit_6j) else limit_6j
+                    
+                    try: journal = generiere_mitarbeiter_lohnjournal(session, ma.id, start_y, 1, end_y, 12)
+                    except ValueError: continue
+                    kosten_dict = {e["monat"]: e["gesamtkosten_inkl_rueck"] for e in journal}
+                    
+                    for m_str in alle_monate:
+                        m, y = int(m_str.split('/')[0]), int(m_str.split('/')[1])
+                        col_date = date(y, m, 1)
+                        # Nur Zukunft betrachten (Vergangenheit ist vorbei)
+                        is_past_or_current = (y < heute.year) or (y == heute.year and m <= heute.month)
+                        
+                        if ma.am_ifpt_seit <= col_date < commitment_end and not is_past_or_current:
+                            # Zielkapazität aus Arbeitszeiten lesen
+                            check_end_date = date(y, m, calendar.monthrange(y, m)[1])
+                            target_cap = 1.0
+                            for az in ma.arbeitszeiten:
+                                if az.gueltig_ab <= check_end_date and (not az.gueltig_bis or az.gueltig_bis >= col_date):
+                                    target_cap = az.anteil_pct
+                                    
+                            gedeckter_anteil = ma_deckung.get(ma.id, {}).get(m_str, 0.0)
+                            ungedeckt = max(0.0, target_cap - gedeckter_anteil)
+                            
+                            if ungedeckt > 0:
+                                ausgaben_6j[m_str] += kosten_dict.get(m_str, 0.0) * ungedeckt
+
+        finally:
+            session.close()
+
+        # --- 3. GRAPH ZEICHNEN ---
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        
+        kumuliert_budget = start_kapital
+        kumuliert_kosten = start_kosten
+        
+        netto_verlauf = []
+        budget_linie = []
+        kosten_linie = []
+        
+        for m in alle_monate:
+            kumuliert_budget += budget_zufluss[m]
+            
+            monats_kosten = ausgaben_fix[m]
+            if self.cb_plan.isChecked(): monats_kosten += ausgaben_plan[m]
+            if self.cb_6j.isChecked(): monats_kosten += ausgaben_6j[m]
+                
+            kumuliert_kosten += monats_kosten
+            
+            budget_linie.append(kumuliert_budget)
+            kosten_linie.append(kumuliert_kosten)
+            netto_verlauf.append(kumuliert_budget - kumuliert_kosten)
+            
+        # Nulllinie (Bankrott-Grenze)
+        ax.plot(alle_monate, [0]*len(alle_monate), color="black", linewidth=2, zorder=3)
+        
+        # Netto-Liquidität (Das Haupt-Szenario)
+        ax.plot(alle_monate, netto_verlauf, label="Netto-Deckungsmasse (Liquidität)", color="#2C3E50", linewidth=3, zorder=4)
+        
+        # Farben für Positiv/Negativ
+        ax.fill_between(alle_monate, 0, netto_verlauf, where=[n >= 0 for n in netto_verlauf], color="#27AE60", alpha=0.3, interpolate=True, label="Überdeckung (Puffer)")
+        ax.fill_between(alle_monate, 0, netto_verlauf, where=[n < 0 for n in netto_verlauf], color="#E74C3C", alpha=0.4, interpolate=True, label="Unterdeckung (Fehlbetrag)")
+        
+        ax.set_title("Budgetäres Planungstool: Instituts-Szenario")
+        ax.set_ylabel("Euro (€)")
+        
+        ax.grid(True, linestyle=":", alpha=0.7)
+        if len(alle_monate) > 12: 
+            ax.set_xticks(range(0, len(alle_monate), max(1, len(alle_monate)//10)))
+            
+        ax.legend(loc="upper right")
+        self.figure.tight_layout()
+        self.canvas.draw()
+
+
 # ==========================================
 # HAUPT-CONTAINER (Regelt die Rechte/Tabs)
 # ==========================================
@@ -695,10 +928,12 @@ class ControllingView(QWidget):
         self.finanz_widget = FinanzControllingWidget()
         self.personal_widget = PersonalControllingWidget()
         self.graph_widget = GraphControllingWidget(self)
+        self.szenario_widget = SzenarioGraphWidget(self) # NEU
         
         self.tabs.addTab(self.finanz_widget, "💶 Finanz-Dashboard (Budgets)")
         self.tabs.addTab(self.personal_widget, "👥 Personal-Auslastung (Soll/Ist)")
-        self.tabs.addTab(self.graph_widget, "📈 Budget Burn-Down (Graphen)")
+        self.tabs.addTab(self.graph_widget, "📈 Budget Burn-Down (Projekte)")
+        self.tabs.addTab(self.szenario_widget, "🔮 Szenario-Planung (Institut)") # NEU
         
         self.tabs.currentChanged.connect(self.on_tab_changed)
 
@@ -710,3 +945,5 @@ class ControllingView(QWidget):
         elif index == 2:
             self.finanz_widget.load_data() 
             self.graph_widget.lade_projekte()
+        elif index == 3:
+            self.szenario_widget.berechne_und_zeichne() # NEU

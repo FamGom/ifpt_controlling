@@ -31,5 +31,16 @@ def patch_database():
                     
         print("❌ Keine passende Tabelle gefunden. Bist du sicher, dass die Datenbank existiert?")
 
+
+
+    with engine.connect() as conn:
+            try:
+                conn.execute(text("ALTER TABLE projekt ADD COLUMN bewilligungswahrscheinlichkeit_pct FLOAT DEFAULT 100.0"))
+                conn.commit()
+                print("✅ Spalte erfolgreich hinzugefügt.")
+            except Exception as e:
+                print(f"Fehler: {e}")
+
+
 if __name__ == "__main__":
     patch_database()

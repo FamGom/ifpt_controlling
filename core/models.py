@@ -113,6 +113,8 @@ class Projekt(Base):
     # NEU: Kaufmännische Felder für das Projektende
     tatsaechliche_rueckzahlung = Column(Float, default=0.0) 
     restmittel_verbleib_typ = Column(String, default="Rückzahlung an Zuwendungsgeber")
+    # In core/models.py unter der Klasse Projekt hinzufügen:
+    bewilligungswahrscheinlichkeit_pct = Column(Float, nullable=False, default=100.0)
 
     zuweisungen = relationship("Zuweisung", back_populates="projekt", cascade="all, delete-orphan")
 
