@@ -705,46 +705,106 @@ class SzenarioGraphWidget(QWidget):
         self.main_view = controlling_view_parent
         self.setup_ui()
 
+    def showEvent(self, event):
+        """Lädt die Projekte automatisch neu, wenn das Tab geöffnet wird."""
+        self.load_projekte()
+        self.berechne_und_zeichne()
+        super().showEvent(event)
+
     def setup_ui(self):
         layout = QVBoxLayout(self)
         
-        info = QLabel("<b>Liquiditäts-Szenarien:</b> Schalten Sie Einnahmen und Ausgaben hinzu, um zu simulieren, wann das Institut unterfinanziert ist.")
+        info = QLabel("<b>Liquiditäts-Sandkasten:</b> Schalten Sie Parameter an/ab oder verändern Sie die Chancen beantragter Projekte, um Best- und Worst-Case Szenarien zu simulieren. (Dies verändert <b>keine</b> echten Datenbank-Werte!)")
         info.setStyleSheet("color: #7F8C8D; margin-bottom: 10px;")
         layout.addWidget(info)
         
-        toolbar = QHBoxLayout()
-        toolbar.addWidget(QLabel("<b>Zeitraum:</b>"))
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # --- LINKES PANEL: STEUERUNG ---
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 10, 0)
+        
+        time_layout = QHBoxLayout()
+        time_layout.addWidget(QLabel("<b>Zeitraum:</b>"))
         self.spin_start = QSpinBox(); self.spin_start.setRange(2020, 2060); self.spin_start.setValue(date.today().year)
-        toolbar.addWidget(self.spin_start)
-        toolbar.addWidget(QLabel("bis"))
+        time_layout.addWidget(self.spin_start)
+        time_layout.addWidget(QLabel("bis"))
         self.spin_end = QSpinBox(); self.spin_end.setRange(2020, 2060); self.spin_end.setValue(date.today().year + 3)
-        toolbar.addWidget(self.spin_end)
+        time_layout.addWidget(self.spin_end)
+        left_layout.addLayout(time_layout)
         
-        toolbar.addSpacing(20)
-        self.cb_beantragt = QCheckBox("➕ Einnahmen: Beantragte Projekte (gewichtet) einbeziehen")
-        self.cb_plan = QCheckBox("➖ Ausgaben: Weiche Matrix-Planungen einbeziehen")
-        self.cb_6j = QCheckBox("➖ Ausgaben: Ungedeckte 6-Jahres-Zusagen (WissZeitVG) abziehen")
-        
-        # Standard-Szenario: Worst-Case (Nur sicheres Geld, aber alle Versprechen)
-        self.cb_beantragt.setChecked(False)
+        left_layout.addSpacing(15)
+        left_layout.addWidget(QLabel("<b>Ausgaben-Szenario:</b>"))
+        self.cb_plan = QCheckBox("Weiche Matrix-Planungen einbeziehen")
+        self.cb_6j = QCheckBox("Ungedeckte 6-Jahre-Zusagen (WissZeitVG) abziehen")
         self.cb_plan.setChecked(True)
         self.cb_6j.setChecked(True)
+        left_layout.addWidget(self.cb_plan)
+        left_layout.addWidget(self.cb_6j)
         
-        toolbar.addWidget(self.cb_beantragt)
-        toolbar.addWidget(self.cb_plan)
-        toolbar.addWidget(self.cb_6j)
+        left_layout.addSpacing(15)
+        left_layout.addWidget(QLabel("<b>Pipeline: Beantragte Projekte anpassen</b>"))
+        info_pipe = QLabel("<i>Haken = Projekt einbeziehen.</i>")
+        info_pipe.setStyleSheet("font-size: 8pt; color: #7F8C8D;")
+        left_layout.addWidget(info_pipe)
+        
+        self.table_probs = QTableWidget()
+        self.table_probs.setColumnCount(2)
+        self.table_probs.setHorizontalHeaderLabels(["Projekt", "Chance"])
+        self.table_probs.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table_probs.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table_probs.setAlternatingRowColors(True)
+        left_layout.addWidget(self.table_probs)
         
         btn_calc = QPushButton("🚀 Szenario berechnen")
-        btn_calc.setStyleSheet("background-color: #8E44AD; color: white; font-weight: bold; padding: 5px 15px;")
+        btn_calc.setStyleSheet("background-color: #8E44AD; color: white; font-weight: bold; padding: 8px;")
         btn_calc.clicked.connect(self.berechne_und_zeichne)
-        toolbar.addStretch()
-        toolbar.addWidget(btn_calc)
+        left_layout.addWidget(btn_calc)
         
-        layout.addLayout(toolbar)
+        # --- RECHTES PANEL: GRAPH ---
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
         
-        self.figure = Figure(figsize=(10, 5), dpi=100)
+        self.figure = Figure(figsize=(8, 5), dpi=100)
         self.canvas = FigureCanvas(self.figure)
-        layout.addWidget(self.canvas)
+        right_layout.addWidget(self.canvas)
+        
+        splitter.addWidget(left_widget)
+        splitter.addWidget(right_widget)
+        splitter.setSizes([350, 850])
+        
+        layout.addWidget(splitter)
+
+    def load_projekte(self):
+        """Lädt alle beantragten Projekte in die Steuerungs-Tabelle."""
+        session = get_session()
+        try:
+            self.table_probs.setRowCount(0)
+            beantragt = session.query(Projekt).filter_by(status=ProjektStatus.BEANTRAGT).order_by(Projekt.projektname).all()
+            for p in beantragt:
+                row = self.table_probs.rowCount()
+                self.table_probs.insertRow(row)
+                
+                # Checkbox + Projektname
+                item_name = QTableWidgetItem(p.projektname)
+                item_name.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+                item_name.setCheckState(Qt.CheckState.Checked)
+                item_name.setData(Qt.ItemDataRole.UserRole, p.id) # DB-ID versteckt speichern
+                self.table_probs.setItem(row, 0, item_name)
+                
+                # SpinBox für die Live-Wahrscheinlichkeit
+                spin = QDoubleSpinBox()
+                spin.setRange(0.0, 100.0)
+                spin.setDecimals(1)
+                spin.setSuffix(" %")
+                spin.setStyleSheet("background-color: #FAFAFA; color: #000;")
+                prob = getattr(p, "bewilligungswahrscheinlichkeit_pct", 100.0)
+                spin.setValue(prob if prob is not None else 100.0)
+                self.table_probs.setCellWidget(row, 1, spin)
+        finally:
+            session.close()
 
     def berechne_und_zeichne(self):
         start_y, end_y = self.spin_start.value(), self.spin_end.value()
@@ -753,37 +813,48 @@ class SzenarioGraphWidget(QWidget):
         alle_monate = [f"{m:02d}/{y}" for y in range(start_y, end_y + 1) for m in range(1, 13)]
         if not alle_monate: return
 
+        szenario_probs = {}
+        for r in range(self.table_probs.rowCount()):
+            item = self.table_probs.item(r, 0)
+            p_id = item.data(Qt.ItemDataRole.UserRole)
+            is_checked = item.checkState() == Qt.CheckState.Checked
+            spin = self.table_probs.cellWidget(r, 1)
+            
+            if is_checked:
+                szenario_probs[p_id] = spin.value()
+            else:
+                szenario_probs[p_id] = 0.0
+
         session = get_session()
         heute = date.today()
         
-        # Container für die Zeitreihen
         budget_zufluss = {m: 0.0 for m in alle_monate}
-        ausgaben_fix = {m: 0.0 for m in alle_monate}  # Ist + Obligo
-        ausgaben_plan = {m: 0.0 for m in alle_monate} # Nur Planung
-        ausgaben_6j = {m: 0.0 for m in alle_monate}   # Ungedeckter Bedarf
+        ausgaben_fix = {m: 0.0 for m in alle_monate} 
+        ausgaben_plan = {m: 0.0 for m in alle_monate} 
+        ausgaben_6j = {m: 0.0 for m in alle_monate}   
         
-        start_kapital = 0.0 # Kumuliertes Budget aus Vorjahren
-        start_kosten = 0.0  # Kumulierte Kosten aus Vorjahren
+        start_kapital = 0.0 
+        start_kosten = 0.0  
         
         try:
-            # --- 1. PROJEKTE (Budgets & Matrix-Kosten) ---
             projekte = session.query(Projekt).all()
             for p in projekte:
                 if not p.status or p.status == ProjektStatus.ABGELEHNT: continue
                 
-                # Checkbox-Weiche für Einnahmen
-                if p.status == ProjektStatus.BEANTRAGT and not self.cb_beantragt.isChecked():
-                    continue
+                faktor = 1.0
+                if p.status == ProjektStatus.BEANTRAGT:
+                    if p.id not in szenario_probs: continue 
+                    faktor = szenario_probs[p.id] / 100.0
                     
-                prob = getattr(p, "bewilligungswahrscheinlichkeit_pct", 100.0) or 100.0
+                if faktor <= 0.0: continue
+                    
                 p_budget = (
                     (p.personalbudget_e1_e12 or 0) + 
                     (p.personalbudget_e13_e15 or 0) + 
                     (p.personalbudget_besch_entgelt or 0) + 
                     (p.sachmittelbudget or 0)
-                ) * (prob / 100.0)
+                ) * faktor
                 
-                # Zufluss einbuchen (Budget steht ab Projektbeginn zur Verfügung)
                 if p.projektbeginn:
                     m_str = f"{p.projektbeginn.month:02d}/{p.projektbeginn.year}"
                     if m_str in budget_zufluss:
@@ -791,15 +862,13 @@ class SzenarioGraphWidget(QWidget):
                     elif p.projektbeginn.year < start_y:
                         start_kapital += p_budget
                 
-                # Kosten aus dem Controlling-Report holen
                 try: report = generiere_projekt_controlling(session, p.id, heute)
                 except ValueError: continue
                 
                 for mv in report.get("monats_verlauf", []):
                     m_str = mv["monat"]
-                    # Wir addieren Ist + Obligo
-                    k_fix = mv.get("ist_kosten_ctrl", 0.0) + mv.get("obligo", 0.0)
-                    k_plan = mv.get("plan_kosten", 0.0)
+                    k_fix = (mv.get("ist_kosten_ctrl", 0.0) + mv.get("obligo", 0.0)) * faktor
+                    k_plan = mv.get("plan_kosten", 0.0) * faktor
                     
                     if m_str in ausgaben_fix:
                         ausgaben_fix[m_str] += k_fix
@@ -809,7 +878,6 @@ class SzenarioGraphWidget(QWidget):
                         if m_y < start_y:
                             start_kosten += k_fix + (k_plan if self.cb_plan.isChecked() else 0.0)
 
-            # --- 2. 6-JAHRES-VAKANZEN (Instituts-Obligo) ---
             if self.cb_6j.isChecked():
                 mitarbeiter_liste = session.query(Mitarbeiter).all()
                 zuweisungen = session.query(Zuweisung).filter(
@@ -817,7 +885,6 @@ class SzenarioGraphWidget(QWidget):
                     Zuweisung.start_datum <= date(end_y, 12, 31)
                 ).all()
                 
-                # Zuweisungen aggregieren
                 ma_deckung = {}
                 for z in zuweisungen:
                     if z.mitarbeiter_id not in ma_deckung: ma_deckung[z.mitarbeiter_id] = {m: 0.0 for m in alle_monate}
@@ -829,11 +896,9 @@ class SzenarioGraphWidget(QWidget):
                         if m == 0: y -= 1; m = 12
                         m_str = f"{m:02d}/{y}"
                         if m_str in alle_monate:
-                            # Wenn Plan-Checkbox aus ist, ignorieren wir Plan-Zuweisungen bei der Deckung!
                             if z.typ == ZuweisungsTyp.PLANUNG and not self.cb_plan.isChecked(): continue
                             ma_deckung[z.mitarbeiter_id][m_str] += z.anteil_pct
 
-                # Lücken berechnen
                 for ma in mitarbeiter_liste:
                     if not ma.am_ifpt_seit: continue
                     try: limit_6j = date(ma.am_ifpt_seit.year + 6, ma.am_ifpt_seit.month, ma.am_ifpt_seit.day)
@@ -847,11 +912,9 @@ class SzenarioGraphWidget(QWidget):
                     for m_str in alle_monate:
                         m, y = int(m_str.split('/')[0]), int(m_str.split('/')[1])
                         col_date = date(y, m, 1)
-                        # Nur Zukunft betrachten (Vergangenheit ist vorbei)
                         is_past_or_current = (y < heute.year) or (y == heute.year and m <= heute.month)
                         
                         if ma.am_ifpt_seit <= col_date < commitment_end and not is_past_or_current:
-                            # Zielkapazität aus Arbeitszeiten lesen
                             check_end_date = date(y, m, calendar.monthrange(y, m)[1])
                             target_cap = 1.0
                             for az in ma.arbeitszeiten:
@@ -867,7 +930,6 @@ class SzenarioGraphWidget(QWidget):
         finally:
             session.close()
 
-        # --- 3. GRAPH ZEICHNEN ---
         self.figure.clear()
         ax = self.figure.add_subplot(111)
         
@@ -891,27 +953,41 @@ class SzenarioGraphWidget(QWidget):
             kosten_linie.append(kumuliert_kosten)
             netto_verlauf.append(kumuliert_budget - kumuliert_kosten)
             
-        # Nulllinie (Bankrott-Grenze)
         ax.plot(alle_monate, [0]*len(alle_monate), color="black", linewidth=2, zorder=3)
-        
-        # Netto-Liquidität (Das Haupt-Szenario)
         ax.plot(alle_monate, netto_verlauf, label="Netto-Deckungsmasse (Liquidität)", color="#2C3E50", linewidth=3, zorder=4)
         
-        # Farben für Positiv/Negativ
         ax.fill_between(alle_monate, 0, netto_verlauf, where=[n >= 0 for n in netto_verlauf], color="#27AE60", alpha=0.3, interpolate=True, label="Überdeckung (Puffer)")
         ax.fill_between(alle_monate, 0, netto_verlauf, where=[n < 0 for n in netto_verlauf], color="#E74C3C", alpha=0.4, interpolate=True, label="Unterdeckung (Fehlbetrag)")
         
-        ax.set_title("Budgetäres Planungstool: Instituts-Szenario")
+        ax.set_title("Szenario: Instituts-Liquidität")
         ax.set_ylabel("Euro (€)")
-        
         ax.grid(True, linestyle=":", alpha=0.7)
-        if len(alle_monate) > 12: 
-            ax.set_xticks(range(0, len(alle_monate), max(1, len(alle_monate)//10)))
+        
+        # ==========================================
+        # NEU: Intelligente X-Achsen-Formatierung
+        # ==========================================
+        step = 1
+        if len(alle_monate) > 24: step = 2
+        if len(alle_monate) > 48: step = 3
+        if len(alle_monate) > 72: step = 6
+            
+        x_ticks = list(range(0, len(alle_monate), step))
+        x_labels = []
+        
+        for i in x_ticks:
+            m_str, y_str = alle_monate[i].split('/')
+            # Jahr nur beim allerersten Eintrag oder im Januar anzeigen
+            if m_str == "01" or i == 0:
+                x_labels.append(f"{m_str}\n{y_str}")
+            else:
+                x_labels.append(m_str)
+                
+        ax.set_xticks(x_ticks)
+        ax.set_xticklabels(x_labels)
             
         ax.legend(loc="upper right")
         self.figure.tight_layout()
         self.canvas.draw()
-
 
 # ==========================================
 # HAUPT-CONTAINER (Regelt die Rechte/Tabs)
