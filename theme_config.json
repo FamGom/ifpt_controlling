@@ -1,0 +1,22 @@
+{
+    "pdf_font_family": "Arial",
+    "pdf_font_size": "9pt",
+    "pdf_text_color": "#000000",
+    "pdf_header_bg": "#D9D9D9",
+    "pdf_header_text": "#000000",
+    "pdf_row_even_bg": "#F2F2F2",
+    "pdf_sum_bg": "#E6E6E6",
+    "pdf_sum_text": "#000000",
+    "pdf_total_bg": "#CCCCCC",
+    "pdf_total_text": "#000000",
+    "pdf_border_color": "#000000",
+    "pdf_border_style": "solid",
+    "pdf_border_width": 1,
+    "app_font_family": "Segoe UI",
+    "app_font_size": "10pt",
+    "app_text_color": "#E0E0E0",
+    "app_bg_color": "#eeeeee",
+    "app_table_bg": "#252526",
+    "app_table_alt_bg": "#2D2D30",
+    "app_primary_color": "#007ACC"
+}
