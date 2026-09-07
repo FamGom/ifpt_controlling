@@ -10,6 +10,7 @@ from gui.views.view_mitarbeiter import MitarbeiterView
 from gui.views.view_system import SystemAdminMainView
 from gui.views.view_settings import SettingsView
 from gui.views.view_vakanzen import VakanzenView
+from gui.views.view_ausgaben import AusgabenView
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -29,6 +30,7 @@ class MainWindow(QMainWindow):
         self.tab_vakanzen = VakanzenView()
         self.tab_ist_abweichungen = IstAbweichungenView()
         self.tab_projekte = ProjekteView()
+        self.tab_ausgaben = AusgabenView()
         self.tab_mitarbeiter = MitarbeiterView()
         self.tab_admin = SystemAdminMainView()
         self.tab_settings = SettingsView()
@@ -39,6 +41,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_vakanzen, "⚖️ Vakanzen & Instituts-Steuerung")
         self.tabs.addTab(self.tab_ist_abweichungen, "⏱️ Ist-Abweichungen erfassen")
         self.tabs.addTab(self.tab_projekte, "📂 Projekt-Verwaltung")
+        self.tabs.addTab(self.tab_ausgaben, "🛒 Ausgaben")
         self.tabs.addTab(self.tab_mitarbeiter, "👥 Mitarbeiter-Stammdaten")
         self.tabs.addTab(self.tab_admin, "⚙️ System & Administration")
         self.tabs.addTab(self.tab_settings, "🎨 Design & Einstellungen")

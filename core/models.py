@@ -137,3 +137,61 @@ class GehaltsTabelle(Base):
     stufe = Column(String(10))          
     gehalt_brutto = Column(Float)       
     gueltig_ab = Column(Date)
+
+class AusgabenStatus(enum.Enum):
+    PLAN = "Plan-Budget"
+    BESTELLT = "Bestellt (Obligo)"
+    BEZAHLT = "Bezahlt (Ist)"
+
+class Kostenart(enum.Enum):
+    E12_E15 = "0812 - Beschäftigte E12-E15"
+    E1_E11 = "0817 - Beschäftigte E1-E11"
+    LOHNEMPFAENGER = "0820 - Lohnempfänger(innen) / Sonstige"
+    BESCHAEFTIGUNGSENTGELTE = "0822 - Beschäftigungsentgelte (HiWis)"
+    GEGENSTAENDE_KLEIN = "0831 - Gegenstände bis 800/410/400 €"
+    MIETEN = "0834 - Mieten und Rechnerkosten"
+    VERGABE = "0835 - Vergabe von Aufträgen"
+    VERWALTUNG = "0843 - Sonstige allg. Verwaltungsausgaben"
+    DIENSTREISEN = "0846 - Dienstreisen"
+    INVESTITIONEN = "0850 - Gegenstände & Invest. > 800/410/400 €"
+
+class AusgabeKopf(Base):
+    """Kopfdaten einer Bestellung, Rechnung oder Reisekostenabrechnung"""
+    __tablename__ = 'ausgabe_kopf'
+    id = Column(Integer, primary_key=True)
+    titel = Column(String, nullable=False) # z.B. "Roboterarm" oder "Dienstreise München"
+    status = Column(Enum(AusgabenStatus), default=AusgabenStatus.PLAN)
+    
+    # Kaufmännische Daten
+    lieferant = Column(String, nullable=True)
+    rechnungsnummer = Column(String, nullable=True)
+    bestelldatum = Column(Date, nullable=True)
+    rechnungsdatum = Column(Date, nullable=True)
+    
+    # Für Reisekosten oder Auslagen-Erstattungen
+    beguenstigter_mitarbeiter_id = Column(Integer, ForeignKey('mitarbeiter.id'), nullable=True)
+    
+    notizen = Column(String, nullable=True)
+    
+    positionen = relationship("AusgabePosition", back_populates="kopf", cascade="all, delete-orphan")
+    mitarbeiter = relationship("Mitarbeiter")
+
+class AusgabePosition(Base):
+    """Die einzelnen Zeilen/Buchungen unterhalb eines Ausgabe-Kopfs"""
+    __tablename__ = 'ausgabe_position'
+    id = Column(Integer, primary_key=True)
+    kopf_id = Column(Integer, ForeignKey('ausgabe_kopf.id'), nullable=False)
+    projekt_id = Column(Integer, ForeignKey('projekt.id'), nullable=False)
+    
+    kostenart = Column(Enum(Kostenart), nullable=False)
+    bezeichnung = Column(String, nullable=False) # z.B. "Steuerungselektronik"
+    betrag_euro = Column(Float, nullable=False)
+    
+    # Spezifisch für 0850 Investitionen
+    lfd_nr_invest = Column(String, nullable=True) 
+    
+    # Workflow: Wenn diese Position aus einem Plan-Budget entstanden ist
+    referenz_plan_id = Column(Integer, ForeignKey('ausgabe_position.id'), nullable=True)
+    
+    kopf = relationship("AusgabeKopf", back_populates="positionen")
+    projekt = relationship("Projekt")

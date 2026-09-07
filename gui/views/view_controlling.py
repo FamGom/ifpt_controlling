@@ -43,24 +43,41 @@ class FinanzControllingWidget(QWidget):
         header_layout.addWidget(refresh_btn)
         layout.addLayout(header_layout)
 
+        # --- NEU: DYNAMISCHE TOPF-FILTER ---
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("<b>Einberechnete Budget-Töpfe:</b>"))
+        
+        self.chk_e13_15 = QCheckBox("E13-E15")
+        self.chk_e1_12 = QCheckBox("E1-E12")
+        self.chk_hiwi = QCheckBox("Hilfskräfte (HiWi)")
+        self.chk_sach = QCheckBox("Sachmittel")
+        
+        for cb in [self.chk_e13_15, self.chk_e1_12, self.chk_hiwi, self.chk_sach]:
+            cb.setChecked(True)
+            cb.toggled.connect(self.render_tables)
+            filter_layout.addWidget(cb)
+            
+        filter_layout.addStretch()
+        layout.addLayout(filter_layout)
+
         splitter = QSplitter(Qt.Orientation.Vertical)
         
         widget_gesamt = QWidget()
         layout_gesamt = QVBoxLayout(widget_gesamt)
         layout_gesamt.setContentsMargins(0, 10, 0, 0)
-        layout_gesamt.addWidget(QLabel("<b>Ansicht 1: Gesamt-Budget über gesamte Projektlaufzeit</b>"))
+        layout_gesamt.addWidget(QLabel("<b>Ansicht 1: Gesamt-Budget über gesamte Projektlaufzeit (Gefiltert)</b>"))
         
         self.table_gesamt = QTableWidget()
         spalten_gesamt = ["Projekt", "Budget gesamt", "Ist-Kosten", "Obligo", "Plan-Ausgaben", "Verfügbar", "Verfügbar %"]
         self.table_gesamt.setColumnCount(len(spalten_gesamt))
         self.table_gesamt.setHorizontalHeaderLabels(spalten_gesamt)
         self.table_gesamt.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table_gesamt.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents) 
+        self.table_gesamt.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table_gesamt.setAlternatingRowColors(True)
         self.table_gesamt.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         layout_gesamt.addWidget(self.table_gesamt)
         splitter.addWidget(widget_gesamt)
-
+        
         widget_jahr = QWidget()
         layout_jahr = QVBoxLayout(widget_jahr)
         layout_jahr.setContentsMargins(0, 20, 0, 0)
@@ -70,8 +87,8 @@ class FinanzControllingWidget(QWidget):
         self.combo_jahr = QComboBox()
         for y in range(2024, 2035):
             self.combo_jahr.addItem(str(y), y)
-        self.combo_jahr.setCurrentText(str(date.today().year)) 
-        self.combo_jahr.currentIndexChanged.connect(self.update_jahresscheibe)
+        self.combo_jahr.setCurrentText(str(date.today().year))
+        self.combo_jahr.currentIndexChanged.connect(self.render_tables)
         header_jahr.addWidget(self.combo_jahr)
         header_jahr.addStretch()
         layout_jahr.addLayout(header_jahr)
@@ -93,6 +110,7 @@ class FinanzControllingWidget(QWidget):
         return f"{value:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
 
     def load_data(self):
+        """Holt die schweren Controlling-Daten aus der Datenbank."""
         session = get_session()
         heute = date.today()
         self.aktuelle_reports = []
@@ -100,66 +118,96 @@ class FinanzControllingWidget(QWidget):
         
         try:
             projekte = session.query(Projekt).all()
-            self.table_gesamt.setRowCount(0)
-            
             for projekt in projekte:
                 try:
                     report = generiere_projekt_controlling(session, projekt.id, heute)
                 except ValueError as e:
-                    # HARTER CHECK: Schlägt an, wenn System- oder Tarifdaten in DB fehlen!
                     QMessageBox.critical(self, f"Stammdaten-Fehler in Projekt: {projekt.projektname}", str(e))
                     self.table_gesamt.setRowCount(0)
                     self.table_jahr.setRowCount(0)
-                    return # Bricht das Laden ab, bis der User das Problem behebt
+                    return 
                     
                 self.aktuelle_reports.append(report)
                 self.aktuelle_projekte.append(projekt)
                 
-                row_idx = self.table_gesamt.rowCount()
-                self.table_gesamt.insertRow(row_idx)
-                self.table_gesamt.setItem(row_idx, 0, QTableWidgetItem(report["projekt"]))
-                
-                werte = [
-                    self.format_currency(report["budget_gesamt"]),
-                    self.format_currency(report["ist_buchungen_gesamt"]),
-                    self.format_currency(report["obligo_gesamt"]),
-                    self.format_currency(report["plan_ausgaben_gesamt"]),
-                    self.format_currency(report["verfuegbare_mittel"]),
-                    f"{report['verfuegbar_pct']} %"
-                ]
-                
-                for col_idx, wert in enumerate(werte, start=1):
-                    item = QTableWidgetItem(wert)
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                    if col_idx == 5 and report["verfuegbare_mittel"] < 0:
-                        item.setForeground(Qt.GlobalColor.red)
-                    self.table_gesamt.setItem(row_idx, col_idx, item)
-                    
-            self.update_jahresscheibe()
+            # Sobald die Daten da sind, lassen wir sie nach Töpfen filtern und zeichnen
+            self.render_tables()
         finally:
             session.close()
 
-    def update_jahresscheibe(self):
-        ziel_jahr = self.combo_jahr.currentData()
-        if not ziel_jahr: return
+    def render_tables(self):
+        """Wendet die Checkbox-Filter auf die geladenen Daten an und befüllt die Tabellen blitzschnell neu."""
+        self.table_gesamt.setRowCount(0)
         self.table_jahr.setRowCount(0)
         
+        ziel_jahr = self.combo_jahr.currentData()
+        
+        active_pots = []
+        if self.chk_e13_15.isChecked(): active_pots.append("e13_15")
+        if self.chk_e1_12.isChecked(): active_pots.append("e1_12")
+        if self.chk_hiwi.isChecked(): active_pots.append("hiwi")
+        if self.chk_sach.isChecked(): active_pots.append("sachmittel")
+
+        def safe_get(tup_or_float, idx):
+            if isinstance(tup_or_float, tuple): return tup_or_float[idx]
+            return tup_or_float if tup_or_float is not None else 0.0
+
         for projekt, report in zip(self.aktuelle_projekte, self.aktuelle_reports):
             if not projekt.projektbeginn or not projekt.projektende: continue
             
-            # ==============================================================
-            # FIX: Projekte komplett ausblenden, wenn sie im Zieljahr nicht laufen!
-            # Verhindert, dass alte Defizite in ferner Zukunft auftauchen.
-            # ==============================================================
-            if ziel_jahr < projekt.projektbeginn.year or ziel_jahr > projekt.projektende.year:
-                continue
+            # --- DYNAMISCHES BUDGET (Nur aktive Töpfe) ---
+            dyn_budget = 0.0
+            if "e13_15" in active_pots: dyn_budget += (projekt.personalbudget_e13_e15 or 0.0)
+            if "e1_12" in active_pots: dyn_budget += (projekt.personalbudget_e1_e12 or 0.0)
+            if "hiwi" in active_pots: dyn_budget += (projekt.personalbudget_besch_entgelt or 0.0)
+            if "sachmittel" in active_pots: dyn_budget += (projekt.sachmittelbudget or 0.0)
+            
+            # --- DYNAMISCHE KOSTEN ---
+            dyn_ist = 0.0
+            dyn_obligo = 0.0
+            dyn_plan = 0.0
+            
+            for mv in report.get("monats_verlauf", []):
+                det = mv.get("details", {})
+                for pot in active_pots:
+                    dyn_ist += safe_get(det.get("ist", {}).get(pot, (0.0, 0.0)), 1)
+                    dyn_obligo += safe_get(det.get("obligo", {}).get(pot, (0.0, 0.0)), 1)
+                    dyn_plan += safe_get(det.get("plan", {}).get(pot, (0.0, 0.0)), 1)
+
+            dyn_verfuegbar = dyn_budget - dyn_ist - dyn_obligo
+            dyn_pct = (dyn_verfuegbar / dyn_budget * 100.0) if dyn_budget > 0 else 0.0
+
+            # --- INSERT TABELLE 1 (Gesamt) ---
+            # Projekte mit 0€ in den gewählten Töpfen direkt ausblenden (hält die Tabelle sauber)
+            if dyn_budget > 0 or dyn_ist > 0 or dyn_obligo > 0:
+                row_idx = self.table_gesamt.rowCount()
+                self.table_gesamt.insertRow(row_idx)
+                self.table_gesamt.setItem(row_idx, 0, QTableWidgetItem(projekt.projektname))
+                
+                werte_gesamt = [
+                    self.format_currency(dyn_budget),
+                    self.format_currency(dyn_ist),
+                    self.format_currency(dyn_obligo),
+                    self.format_currency(dyn_plan),
+                    self.format_currency(dyn_verfuegbar),
+                    f"{dyn_pct:.1f} %"
+                ]
+                for col_idx, wert in enumerate(werte_gesamt, start=1):
+                    item = QTableWidgetItem(wert)
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    if col_idx == 5 and dyn_verfuegbar < 0: item.setForeground(Qt.GlobalColor.red)
+                    self.table_gesamt.setItem(row_idx, col_idx, item)
+
+            # --- DYNAMISCHE JAHRESSCHEIBE (TABELLE 2) ---
+            if not ziel_jahr: continue
+            if ziel_jahr < projekt.projektbeginn.year or ziel_jahr > projekt.projektende.year: continue
 
             start_m = projekt.projektbeginn.year * 12 + projekt.projektbeginn.month
             end_m = projekt.projektende.year * 12 + projekt.projektende.month
             monate_gesamt = end_m - start_m + 1
             if monate_gesamt <= 0: continue
             
-            budget_pro_monat = report["budget_gesamt"] / monate_gesamt
+            budget_pro_monat = dyn_budget / monate_gesamt
             monate_im_zieljahr = sum(1 for m in range(1, 13) if start_m <= (ziel_jahr * 12 + m) <= end_m)
             initiales_jahresbudget = budget_pro_monat * monate_im_zieljahr
             
@@ -167,34 +215,52 @@ class FinanzControllingWidget(QWidget):
             if ziel_jahr > projekt.projektbeginn.year:
                 monate_davor = (ziel_jahr * 12 + 1) - start_m
                 budget_davor_linear = budget_pro_monat * monate_davor
-                kosten_davor = sum(m.get("ist_kosten_cf", m.get("ist_kosten", 0.0)) + m["obligo"] for m in report["monats_verlauf"] if int(m["monat"].split("/")[1]) < ziel_jahr)
+                
+                kosten_davor = 0.0
+                for mv in report.get("monats_verlauf", []):
+                    m_y = int(mv["monat"].split("/")[1])
+                    if m_y < ziel_jahr:
+                        det = mv.get("details", {})
+                        for pot in active_pots:
+                            kosten_davor += safe_get(det.get("ist", {}).get(pot, (0.0, 0.0)), 1)
+                            kosten_davor += safe_get(det.get("obligo", {}).get(pot, (0.0, 0.0)), 1)
+
                 vorjahresuebertrag = budget_davor_linear - kosten_davor
 
-            ist_und_obligo_jahr = sum(m.get("ist_kosten_cf", m.get("ist_kosten", 0.0)) + m["obligo"] for m in report["monats_verlauf"] if int(m["monat"].split("/")[1]) == ziel_jahr)
-            plan_jahr = sum(m["plan_kosten"] for m in report["monats_verlauf"] if int(m["monat"].split("/")[1]) == ziel_jahr)
+            ist_und_obligo_jahr = 0.0
+            plan_jahr = 0.0
+            for mv in report.get("monats_verlauf", []):
+                m_y = int(mv["monat"].split("/")[1])
+                if m_y == ziel_jahr:
+                    det = mv.get("details", {})
+                    for pot in active_pots:
+                        ist_und_obligo_jahr += safe_get(det.get("ist", {}).get(pot, (0.0, 0.0)), 1)
+                        ist_und_obligo_jahr += safe_get(det.get("obligo", {}).get(pot, (0.0, 0.0)), 1)
+                        plan_jahr += safe_get(det.get("plan", {}).get(pot, (0.0, 0.0)), 1)
             
             budget_verfuegbar_jahr = initiales_jahresbudget + vorjahresuebertrag
             restmittel_jahr = budget_verfuegbar_jahr - ist_und_obligo_jahr
             
-            row_idx = self.table_jahr.rowCount()
-            self.table_jahr.insertRow(row_idx)
-            self.table_jahr.setItem(row_idx, 0, QTableWidgetItem(projekt.projektname))
-            
-            werte = [
-                self.format_currency(initiales_jahresbudget),
-                self.format_currency(vorjahresuebertrag),
-                self.format_currency(budget_verfuegbar_jahr),
-                self.format_currency(ist_und_obligo_jahr),
-                self.format_currency(plan_jahr),
-                self.format_currency(restmittel_jahr)
-            ]
-            for col_idx, wert in enumerate(werte, start=1):
-                item = QTableWidgetItem(wert)
-                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                if col_idx == 6 and restmittel_jahr < 0:
-                    item.setForeground(Qt.GlobalColor.red)
-                self.table_jahr.setItem(row_idx, col_idx, item)
-
+            # Auch hier: Nur anzeigen, wenn das Projekt im gewählten Jahr im gewählten Topf Budget oder Kosten hat
+            if initiales_jahresbudget > 0 or ist_und_obligo_jahr > 0 or vorjahresuebertrag != 0:
+                row_idx2 = self.table_jahr.rowCount()
+                self.table_jahr.insertRow(row_idx2)
+                self.table_jahr.setItem(row_idx2, 0, QTableWidgetItem(projekt.projektname))
+                
+                werte_jahr = [
+                    self.format_currency(initiales_jahresbudget),
+                    self.format_currency(vorjahresuebertrag),
+                    self.format_currency(budget_verfuegbar_jahr),
+                    self.format_currency(ist_und_obligo_jahr),
+                    self.format_currency(plan_jahr),
+                    self.format_currency(restmittel_jahr)
+                ]
+                for col_idx, wert in enumerate(werte_jahr, start=1):
+                    item = QTableWidgetItem(wert)
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    if col_idx == 6 and restmittel_jahr < 0:
+                        item.setForeground(Qt.GlobalColor.red)
+                    self.table_jahr.setItem(row_idx2, col_idx, item)
 
     
 # ==========================================
