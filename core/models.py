@@ -116,6 +116,14 @@ class Projekt(Base):
     # In core/models.py unter der Klasse Projekt hinzufügen:
     bewilligungswahrscheinlichkeit_pct = Column(Float, nullable=False, default=100.0)
 
+    # (Diese Felder in der Klasse Projekt einfügen)
+    overhead_regel_id = Column(Integer, ForeignKey('overhead_regel.id'), nullable=True)
+    ziel_konto_id = Column(Integer, ForeignKey('instituts_konto.id'), nullable=True)
+    restmittel_institut_pct = Column(Float, default=0.0) # Darf Restbudget behalten werden? (z.B. 100% bei Industrie)
+
+    overhead_regel = relationship("OverheadRegel", back_populates="projekte")
+    ziel_konto = relationship("InstitutsKonto", back_populates="projekte")
+
     zuweisungen = relationship("Zuweisung", back_populates="projekt", cascade="all, delete-orphan")
 
 class Zuweisung(Base):
@@ -195,3 +203,23 @@ class AusgabePosition(Base):
     
     kopf = relationship("AusgabeKopf", back_populates="positionen")
     projekt = relationship("Projekt")
+
+class InstitutsKonto(Base):
+    """Physische oder virtuelle Rücklagen-Konten des Instituts."""
+    __tablename__ = 'instituts_konto'
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False) # z.B. "Rücklage Industrie"
+    kontonummer = Column(String, nullable=True)
+    
+    projekte = relationship("Projekt", back_populates="ziel_konto")
+
+class OverheadRegel(Base):
+    """Regelsets für die Aufteilung der Gemeinkosten."""
+    __tablename__ = 'overhead_regel'
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False) # z.B. "BMBF (20% Gesamt | 12% Inst. | 8% Verw.)"
+    gesamt_pct = Column(Float, nullable=False, default=20.0)
+    institut_pct = Column(Float, nullable=False, default=12.0)
+    verwaltung_pct = Column(Float, nullable=False, default=8.0)
+    
+    projekte = relationship("Projekt", back_populates="overhead_regel")

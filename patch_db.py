@@ -1,6 +1,7 @@
 from sqlalchemy import text
 # Wir importieren die bestehende Engine, die deine App auch nutzt!
-from core.database import engine 
+from core.database import engine
+from core.models import Base  # Korrigierter Import
 
 def patch_database():
     # Wir probieren beide Tabellennamen (projekt und projekte), 
@@ -42,5 +43,23 @@ def patch_database():
                 print(f"Fehler: {e}")
 
 
+
+def patch_database2():
+    # 1. Neue Tabellen anlegen (InstitutsKonto & OverheadRegel)
+    Base.metadata.create_all(engine)
+    
+    # 2. Bestehende Projekt-Tabelle um die neuen Spalten erweitern
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE projekt ADD COLUMN overhead_regel_id INTEGER REFERENCES overhead_regel(id)"))
+            conn.execute(text("ALTER TABLE projekt ADD COLUMN ziel_konto_id INTEGER REFERENCES instituts_konto(id)"))
+            conn.execute(text("ALTER TABLE projekt ADD COLUMN restmittel_institut_pct FLOAT DEFAULT 0.0"))
+            conn.commit()
+            print("✅ Datenbank erfolgreich gepatcht! Spalten wurden hinzugefügt.")
+        except Exception as e:
+            print("Hinweis: Spalten existieren vermutlich bereits oder es gab einen Fehler:")
+            print(e)
+
 if __name__ == "__main__":
     patch_database()
+    patch_database2()

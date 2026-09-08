@@ -2,7 +2,7 @@ from datetime import date
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                              QTableWidget, QTableWidgetItem, QHeaderView, QLabel, 
                              QMessageBox, QDialog, QFormLayout, QLineEdit, 
-                             QDateEdit, QDoubleSpinBox, QDialogButtonBox, QComboBox, QSplitter)
+                             QDateEdit, QDoubleSpinBox, QDialogButtonBox, QComboBox, QSplitter, QCompleter)
 from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtGui import QColor
 
@@ -17,10 +17,11 @@ class AusgabeBearbeitenDialog(QDialog):
         self.copy_from_plan = copy_from_plan
         self.projekte_cache = []
         self.mitarbeiter_cache = []
+        self.lieferanten_cache = []
         
         titel = "Bestellung / Rechnung bearbeiten" if kopf_id and not copy_from_plan else "Neue Ausgabe / Plan-Budget erfassen"
         self.setWindowTitle(titel)
-        self.resize(1000, 700)
+        self.resize(1100, 700)
         
         self.lade_caches()
         self.setup_ui()
@@ -28,13 +29,15 @@ class AusgabeBearbeitenDialog(QDialog):
         if self.kopf_id:
             self.lade_daten()
         else:
-            self.add_position_row() # Eine leere Zeile zum Start
+            self.add_position_row()
 
     def lade_caches(self):
         session = get_session()
         try:
             self.projekte_cache = session.query(Projekt).order_by(Projekt.projektname).all()
             self.mitarbeiter_cache = session.query(Mitarbeiter).order_by(Mitarbeiter.nachname).all()
+            lieferanten = session.query(AusgabeKopf.lieferant).distinct().all()
+            self.lieferanten_cache = [l[0] for l in lieferanten if l[0]]
         finally:
             session.close()
 
@@ -55,6 +58,9 @@ class AusgabeBearbeitenDialog(QDialog):
         layout_kopf.addRow("Status:", self.combo_status)
         
         self.txt_lieferant = QLineEdit()
+        completer = QCompleter(self.lieferanten_cache, self)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.txt_lieferant.setCompleter(completer)
         layout_kopf.addRow("Lieferant / Kreditor:", self.txt_lieferant)
         
         self.txt_rechnung = QLineEdit()
@@ -62,10 +68,18 @@ class AusgabeBearbeitenDialog(QDialog):
         
         row_dates = QHBoxLayout()
         self.date_bestell = QDateEdit(); self.date_bestell.setCalendarPopup(True); self.date_bestell.setDate(QDate.currentDate())
+        
         self.date_rech = QDateEdit(); self.date_rech.setCalendarPopup(True); self.date_rech.setSpecialValueText(" - ")
         self.date_rech.setDate(QDate(2099, 12, 31))
+        
+        btn_heute = QPushButton("📅 Heute")
+        btn_heute.clicked.connect(lambda: self.date_rech.setDate(QDate.currentDate()))
+        
         row_dates.addWidget(QLabel("Bestelldatum:")); row_dates.addWidget(self.date_bestell)
-        row_dates.addWidget(QLabel("   Rechnungsdatum:")); row_dates.addWidget(self.date_rech)
+        row_dates.addSpacing(20)
+        row_dates.addWidget(QLabel("Rechnungsdatum:")); row_dates.addWidget(self.date_rech)
+        row_dates.addWidget(btn_heute)
+        row_dates.addStretch()
         layout_kopf.addRow("Daten:", row_dates)
         
         self.combo_ma = QComboBox()
@@ -79,14 +93,15 @@ class AusgabeBearbeitenDialog(QDialog):
         # --- POSITIONEN ---
         widget_pos = QWidget()
         layout_pos = QVBoxLayout(widget_pos)
-        layout_pos.addWidget(QLabel("<b>Bestell-Positionen (Splitt-Buchungen möglich)</b>"))
+        layout_pos.addWidget(QLabel("<b>Bestell-Positionen (Splitt-Buchungen)</b>"))
         
         self.table_pos = QTableWidget()
-        self.spalten = ["Projekt", "Kostenart (Kategorie)", "Bezeichnung", "Betrag (€)", "Lfd.Nr. (Invest)"]
+        self.spalten = ["Projekt-Status", "Projekt", "Kostenart (Kategorie)", "Bezeichnung", "Betrag (€)", "Lfd.Nr. (Invest)"]
         self.table_pos.setColumnCount(len(self.spalten))
         self.table_pos.setHorizontalHeaderLabels(self.spalten)
         self.table_pos.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table_pos.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.table_pos.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table_pos.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         layout_pos.addWidget(self.table_pos)
         
         toolbar_pos = QHBoxLayout()
@@ -98,7 +113,7 @@ class AusgabeBearbeitenDialog(QDialog):
         layout_pos.addLayout(toolbar_pos)
         
         splitter.addWidget(widget_pos)
-        splitter.setSizes([300, 400])
+        splitter.setSizes([250, 450])
         main_layout.addWidget(splitter)
         
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
@@ -110,30 +125,64 @@ class AusgabeBearbeitenDialog(QDialog):
         row = self.table_pos.rowCount()
         self.table_pos.insertRow(row)
         
+        c_status = QComboBox()
+        c_status.addItems(["Laufend (Bewilligt)", "Beantragt", "Abgeschlossen", "Alle"])
+        
         c_proj = QComboBox()
-        for p in self.projekte_cache: c_proj.addItem(p.projektname, p.id)
-        if proj_id: c_proj.setCurrentIndex(c_proj.findData(proj_id))
-        self.table_pos.setCellWidget(row, 0, c_proj)
+        
+        def update_projekte(stat_text):
+            c_proj.blockSignals(True)
+            c_proj.clear()
+            for p in self.projekte_cache:
+                if stat_text == "Laufend (Bewilligt)" and p.status != ProjektStatus.BEWILLIGT: continue
+                if stat_text == "Beantragt" and p.status != ProjektStatus.BEANTRAGT: continue
+                if stat_text == "Abgeschlossen" and p.status not in [ProjektStatus.ABGESCHLOSSEN, getattr(ProjektStatus, "BEENDET", None)]: continue
+                c_proj.addItem(p.projektname, p.id)
+                
+            if proj_id and c_proj.findData(proj_id) >= 0:
+                c_proj.setCurrentIndex(c_proj.findData(proj_id))
+            c_proj.blockSignals(False)
+
+        c_status.currentTextChanged.connect(update_projekte)
+        
+        # FIX: Harten Ziel-Status ermitteln und Dropdown füllen (ohne auf Signale zu warten)
+        target_status = "Laufend (Bewilligt)"
+        if proj_id:
+            p_obj = next((p for p in self.projekte_cache if p.id == proj_id), None)
+            if p_obj:
+                if p_obj.status == ProjektStatus.BEWILLIGT: target_status = "Laufend (Bewilligt)"
+                elif p_obj.status == ProjektStatus.BEANTRAGT: target_status = "Beantragt"
+                else: target_status = "Alle"
+
+        c_status.blockSignals(True)
+        c_status.setCurrentText(target_status)
+        c_status.blockSignals(False)
+        
+        # FIX: Das Projekt-Dropdown zwingend manuell befüllen!
+        update_projekte(target_status)
+
+        self.table_pos.setCellWidget(row, 0, c_status)
+        self.table_pos.setCellWidget(row, 1, c_proj)
         
         c_art = QComboBox()
         for a in Kostenart: c_art.addItem(a.value, a)
         if kostenart: c_art.setCurrentIndex(c_art.findData(kostenart))
-        self.table_pos.setCellWidget(row, 1, c_art)
+        self.table_pos.setCellWidget(row, 2, c_art)
         
         txt_bez = QLineEdit(bez)
-        self.table_pos.setCellWidget(row, 2, txt_bez)
+        self.table_pos.setCellWidget(row, 3, txt_bez)
         
         spin_betrag = QDoubleSpinBox()
-        spin_betrag.setRange(-999999.0, 999999.0)
+        spin_betrag.setRange(-9999999.0, 9999999.0)
         spin_betrag.setDecimals(2)
         spin_betrag.setGroupSeparatorShown(True)
         spin_betrag.setSuffix(" €")
         spin_betrag.setValue(betrag)
-        self.table_pos.setCellWidget(row, 3, spin_betrag)
+        self.table_pos.setCellWidget(row, 4, spin_betrag)
         
         txt_inv = QLineEdit(invest_nr if invest_nr else "")
         txt_inv.setPlaceholderText("Nur bei >800€")
-        self.table_pos.setCellWidget(row, 4, txt_inv)
+        self.table_pos.setCellWidget(row, 5, txt_inv)
 
     def lade_daten(self):
         session = get_session()
@@ -155,11 +204,10 @@ class AusgabeBearbeitenDialog(QDialog):
                 idx_m = self.combo_ma.findData(kopf.beguenstigter_mitarbeiter_id)
                 if idx_m >= 0: self.combo_ma.setCurrentIndex(idx_m)
                 
-            # Bei Plan-Übernahme setzen wir den Status direkt auf Bestellt
             if self.copy_from_plan:
                 idx_b = self.combo_status.findData(AusgabenStatus.BESTELLT)
                 if idx_b >= 0: self.combo_status.setCurrentIndex(idx_b)
-                self.txt_titel.setText(f"{kopf.titel} (Kopie aus Plan)")
+                self.txt_titel.setText(f"{kopf.titel} (Teil-Abruf)")
 
             for pos in kopf.positionen:
                 self.add_position_row(pos.projekt_id, pos.kostenart, pos.bezeichnung, pos.betrag_euro, pos.lfd_nr_invest)
@@ -175,7 +223,7 @@ class AusgabeBearbeitenDialog(QDialog):
         try:
             if self.kopf_id and not self.copy_from_plan:
                 kopf = session.query(AusgabeKopf).filter_by(id=self.kopf_id).first()
-                session.query(AusgabePosition).filter_by(kopf_id=kopf.id).delete() # Hard-Reset der Positionen
+                session.query(AusgabePosition).filter_by(kopf_id=kopf.id).delete()
             else:
                 kopf = AusgabeKopf()
                 session.add(kopf)
@@ -190,12 +238,13 @@ class AusgabeBearbeitenDialog(QDialog):
             kopf.rechnungsdatum = None if r_date.year == 2099 else r_date
             kopf.beguenstigter_mitarbeiter_id = self.combo_ma.currentData()
             
+            # Positionen speichern
             for r in range(self.table_pos.rowCount()):
-                p_id = self.table_pos.cellWidget(r, 0).currentData()
-                k_art = self.table_pos.cellWidget(r, 1).currentData()
-                bez = self.table_pos.cellWidget(r, 2).text().strip()
-                betrag = self.table_pos.cellWidget(r, 3).value()
-                inv_nr = self.table_pos.cellWidget(r, 4).text().strip()
+                p_id = self.table_pos.cellWidget(r, 1).currentData()
+                k_art = self.table_pos.cellWidget(r, 2).currentData()
+                bez = self.table_pos.cellWidget(r, 3).text().strip()
+                betrag = self.table_pos.cellWidget(r, 4).value()
+                inv_nr = self.table_pos.cellWidget(r, 5).text().strip()
                 
                 if p_id and k_art and betrag != 0:
                     pos = AusgabePosition(
@@ -204,7 +253,26 @@ class AusgabeBearbeitenDialog(QDialog):
                         betrag_euro=betrag, lfd_nr_invest=inv_nr
                     )
                     session.add(pos)
+
+            # AUTOMATISCHER PLAN-ABZUG (Teilabruf)
+            if self.copy_from_plan and self.kopf_id:
+                orig_plan = session.query(AusgabeKopf).filter_by(id=self.kopf_id).first()
+                if orig_plan:
+                    for new_pos in kopf.positionen:
+                        for orig_pos in orig_plan.positionen:
+                            if orig_pos.projekt_id == new_pos.projekt_id and orig_pos.kostenart == new_pos.kostenart:
+                                orig_pos.betrag_euro -= new_pos.betrag_euro
+                                break
                     
+                    # Leere Plan-Positionen (<=0) löschen
+                    for p in list(orig_plan.positionen):
+                        if p.betrag_euro <= 0.01:
+                            session.delete(p)
+                            
+                    # Wenn der Plan komplett aufgebraucht ist, Kopf löschen
+                    if not any(p.betrag_euro > 0.01 for p in orig_plan.positionen):
+                        session.delete(orig_plan)
+                        
             session.commit()
             self.accept()
         except Exception as e:
@@ -216,7 +284,9 @@ class AusgabeBearbeitenDialog(QDialog):
 class AusgabenView(QWidget):
     def __init__(self):
         super().__init__()
+        self.projekte_cache = []
         self.setup_ui()
+        self.load_projekte_filter()
         self.load_data()
         
     def setup_ui(self):
@@ -225,9 +295,40 @@ class AusgabenView(QWidget):
         title.setProperty("title", "true")
         layout.addWidget(title)
         
-        info = QLabel("Erfassen Sie hier alle kaufmännischen Bestellungen, Reisekosten und HiWi-Verträge, damit diese korrekt aus dem Projektbudget (Burn-Down) abfließen.")
-        info.setStyleSheet("color: #7F8C8D; margin-bottom: 10px;")
+        info = QLabel("Teilabruf-Logik: Wenn Sie aus einem Plan bestellen und den Betrag anpassen, reduziert das System den Ursprungs-Plan automatisch.")
+        info.setStyleSheet("color: #7F8C8D; margin-bottom: 5px;")
         layout.addWidget(info)
+        
+        # --- GLOBALE FILTER ---
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("<b>Filter:</b>"))
+        
+        self.filter_status = QComboBox()
+        self.filter_status.addItems(["Alle Status", "Plan-Budget", "Bestellt (Obligo)", "Bezahlt (Ist)"])
+        self.filter_status.currentIndexChanged.connect(self.load_data)
+        
+        self.filter_projekt = QComboBox()
+        self.filter_projekt.currentIndexChanged.connect(self.load_data)
+        
+        filter_layout.addWidget(self.filter_status)
+        filter_layout.addWidget(self.filter_projekt)
+        filter_layout.addStretch()
+        layout.addLayout(filter_layout)
+        
+        # --- SPALTEN-SUCH-FILTER ---
+        search_layout = QHBoxLayout()
+        self.search_titel = QLineEdit(); self.search_titel.setPlaceholderText("🔍 Titel filtern...")
+        self.search_proj = QLineEdit(); self.search_proj.setPlaceholderText("🔍 Projekt filtern...")
+        self.search_lief = QLineEdit(); self.search_lief.setPlaceholderText("🔍 Lieferant filtern...")
+        
+        self.search_titel.textChanged.connect(self.apply_text_filters)
+        self.search_proj.textChanged.connect(self.apply_text_filters)
+        self.search_lief.textChanged.connect(self.apply_text_filters)
+        
+        search_layout.addWidget(self.search_titel)
+        search_layout.addWidget(self.search_proj)
+        search_layout.addWidget(self.search_lief)
+        layout.addLayout(search_layout)
         
         toolbar = QHBoxLayout()
         btn_add = QPushButton("➕ Neue freie Ausgabe")
@@ -249,23 +350,47 @@ class AusgabenView(QWidget):
         layout.addLayout(toolbar)
         
         self.table = QTableWidget()
-        self.spalten = ["ID", "Status", "Titel / Zweck", "Datum", "Lieferant / MA", "Kostenarten (Auszug)", "Gesamtbetrag"]
+        self.spalten = ["ID", "Status", "Titel / Zweck", "Projekt(e)", "Bestelldatum", "Rechnungsdatum", "Lieferant / MA", "Gesamtbetrag"]
         self.table.setColumnCount(len(self.spalten))
         self.table.setHorizontalHeaderLabels(self.spalten)
         self.table.setColumnHidden(0, True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.doubleClicked.connect(self.bearbeiten)
         layout.addWidget(self.table)
 
+    def load_projekte_filter(self):
+        session = get_session()
+        try:
+            self.filter_projekt.blockSignals(True)
+            self.filter_projekt.clear()
+            self.filter_projekt.addItem("Alle Projekte", None)
+            for p in session.query(Projekt).order_by(Projekt.projektname).all():
+                self.filter_projekt.addItem(p.projektname, p.id)
+            self.filter_projekt.blockSignals(False)
+        finally:
+            session.close()
+
     def load_data(self):
         session = get_session()
         self.table.setRowCount(0)
         try:
-            koepfe = session.query(AusgabeKopf).order_by(AusgabeKopf.bestelldatum.desc()).all()
+            query = session.query(AusgabeKopf)
+            
+            f_stat = self.filter_status.currentText()
+            if f_stat == "Plan-Budget": query = query.filter_by(status=AusgabenStatus.PLAN)
+            elif f_stat == "Bestellt (Obligo)": query = query.filter_by(status=AusgabenStatus.BESTELLT)
+            elif f_stat == "Bezahlt (Ist)": query = query.filter_by(status=AusgabenStatus.BEZAHLT)
+                
+            f_proj = self.filter_projekt.currentData()
+            if f_proj:
+                query = query.join(AusgabePosition).filter(AusgabePosition.projekt_id == f_proj)
+                
+            koepfe = query.order_by(AusgabeKopf.bestelldatum.desc()).all()
+            
             for k in koepfe:
                 row = self.table.rowCount()
                 self.table.insertRow(row)
@@ -280,30 +405,57 @@ class AusgabenView(QWidget):
                 
                 self.table.setItem(row, 2, QTableWidgetItem(k.titel))
                 
-                d_str = k.bestelldatum.strftime('%d.%m.%Y') if k.bestelldatum else "-"
-                self.table.setItem(row, 3, QTableWidgetItem(d_str))
+                # Projekte aggregieren und mit Zeilenumbruch darstellen
+                projekte_liste = list(set([pos.projekt.projektname for pos in k.positionen if pos.projekt]))
+                self.table.setItem(row, 3, QTableWidgetItem("\n".join(projekte_liste)))
+                
+                b_str = k.bestelldatum.strftime('%d.%m.%Y') if k.bestelldatum else "-"
+                r_str = k.rechnungsdatum.strftime('%d.%m.%Y') if k.rechnungsdatum else "-"
+                self.table.setItem(row, 4, QTableWidgetItem(b_str))
+                self.table.setItem(row, 5, QTableWidgetItem(r_str))
                 
                 partner = k.lieferant or ""
                 if k.beguenstigter_mitarbeiter_id and k.mitarbeiter:
                     partner = f"MA: {k.mitarbeiter.nachname}"
-                self.table.setItem(row, 4, QTableWidgetItem(partner))
+                self.table.setItem(row, 6, QTableWidgetItem(partner))
                 
-                arten = list(set([pos.kostenart.value.split(" - ")[0] for pos in k.positionen]))
-                self.table.setItem(row, 5, QTableWidgetItem(", ".join(arten)))
-                
-                summe = sum([pos.betrag_euro for pos in k.positionen])
+                if f_proj:
+                    summe = sum([pos.betrag_euro for pos in k.positionen if pos.projekt_id == f_proj])
+                else:
+                    summe = sum([pos.betrag_euro for pos in k.positionen])
+                    
                 sum_item = QTableWidgetItem(f"{summe:,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
                 sum_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self.table.setItem(row, 6, sum_item)
+                self.table.setItem(row, 7, sum_item)
+                
+            self.table.resizeRowsToContents()
+            self.apply_text_filters()
         finally:
             session.close()
+
+    def apply_text_filters(self):
+        """Wendet die Such-Textfelder live auf die angezeigten Zeilen an."""
+        t_filter = self.search_titel.text().lower()
+        p_filter = self.search_proj.text().lower()
+        l_filter = self.search_lief.text().lower()
+        
+        for r in range(self.table.rowCount()):
+            t_text = self.table.item(r, 2).text().lower() if self.table.item(r, 2) else ""
+            p_text = self.table.item(r, 3).text().lower() if self.table.item(r, 3) else ""
+            l_text = self.table.item(r, 6).text().lower() if self.table.item(r, 6) else ""
+            
+            show = True
+            if t_filter and t_filter not in t_text: show = False
+            if p_filter and p_filter not in p_text: show = False
+            if l_filter and l_filter not in l_text: show = False
+            
+            self.table.setRowHidden(r, not show)
 
     def neu_frei(self):
         if AusgabeBearbeitenDialog(parent=self).exec() == QDialog.DialogCode.Accepted:
             self.load_data()
 
     def neu_aus_plan(self):
-        """Lässt den Nutzer einen Plan-Datensatz wählen und übernimmt ihn als echte Bestellung."""
         session = get_session()
         try:
             plaene = session.query(AusgabeKopf).filter_by(status=AusgabenStatus.PLAN).all()
@@ -313,14 +465,13 @@ class AusgabenView(QWidget):
         finally:
             session.close()
             
-        # Wir nutzen einfach die Tabelle, der Nutzer soll einen Plan anklicken.
         row = self.table.currentRow()
         if row >= 0 and self.table.item(row, 1).text() == AusgabenStatus.PLAN.value:
             k_id = int(self.table.item(row, 0).text())
             if AusgabeBearbeitenDialog(kopf_id=k_id, copy_from_plan=True, parent=self).exec() == QDialog.DialogCode.Accepted:
                 self.load_data()
         else:
-            QMessageBox.information(self, "Hinweis", "Bitte markieren Sie zuerst eine Zeile mit Status 'Plan-Budget' in der Liste.")
+            QMessageBox.information(self, "Hinweis", "Bitte markieren Sie zuerst eine Zeile mit Status 'Plan-Budget'.")
 
     def bearbeiten(self):
         row = self.table.currentRow()

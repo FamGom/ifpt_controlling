@@ -1,154 +1,194 @@
-from datetime import date
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, 
-                             QTableWidgetItem, QHeaderView, QPushButton, QLabel, 
-                             QMessageBox, QDialog, QFormLayout, QLineEdit, 
-                             QDateEdit, QDoubleSpinBox, QDialogButtonBox, QComboBox)
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
+                             QTableWidget, QTableWidgetItem, QHeaderView, QLabel, 
+                             QMessageBox, QDialog, QFormLayout, QLineEdit, QDateEdit, 
+                             QComboBox, QDoubleSpinBox)
 from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtGui import QColor
+import datetime
 
 from core.database import get_session
-from core.models import Projekt, ProjektStatus, Abrechnungsart
+from core.models import Projekt, ProjektStatus, InstitutsKonto, OverheadRegel
 
 class ProjektBearbeitenDialog(QDialog):
     def __init__(self, projekt_id=None, parent=None):
         super().__init__(parent)
         self.projekt_id = projekt_id
+        self.setWindowTitle("Projekt bearbeiten" if projekt_id else "Neues Projekt anlegen")
+        self.resize(600, 650)
         
-        titel = "Projekt bearbeiten" if projekt_id else "Neues Projekt anlegen"
-        self.setWindowTitle(titel)
-        self.resize(500, 600)
+        # 1. Standardwerte prüfen & laden
+        self.lade_caches_und_standards()
         
-        layout = QFormLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setVerticalSpacing(12)
+        # 2. UI aufbauen
+        self.setup_ui()
         
-        self.txt_name = QLineEdit()
-        layout.addRow("Projektname:", self.txt_name)
-        
-        self.combo_status = QComboBox()
-        for s in ProjektStatus:
-            self.combo_status.addItem(s.value, s)
-        layout.addRow("Projekt-Status:", self.combo_status)
+        # 3. Daten füllen
+        if self.projekt_id:
+            self.lade_projekt_daten()
 
+    def lade_caches_und_standards(self):
+        """Erzeugt automatisch Standard-Regeln, falls die Datenbank leer ist."""
+        session = get_session()
+        try:
+            if session.query(OverheadRegel).count() == 0:
+                session.add_all([
+                    OverheadRegel(name="DFG Standard (22%)", gesamt_pct=22.0, institut_pct=12.0, verwaltung_pct=10.0),
+                    OverheadRegel(name="BMBF Standard (20%)", gesamt_pct=20.0, institut_pct=12.0, verwaltung_pct=8.0),
+                    OverheadRegel(name="Industrie / Keine (0%)", gesamt_pct=0.0, institut_pct=0.0, verwaltung_pct=0.0)
+                ])
+                session.commit()
+                
+            if session.query(InstitutsKonto).count() == 0:
+                session.add_all([
+                    InstitutsKonto(name="Zentrale Instituts-Rücklage"),
+                    InstitutsKonto(name="Rücklage Berufungsmittel"),
+                    InstitutsKonto(name="Freie Industrie-Rücklage")
+                ])
+                session.commit()
+                
+            self.regeln = session.query(OverheadRegel).order_by(OverheadRegel.id).all()
+            self.konten = session.query(InstitutsKonto).order_by(InstitutsKonto.id).all()
+        finally:
+            session.close()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        # Basisdaten
+        self.txt_name = QLineEdit()
+        form.addRow("Projektname:", self.txt_name)
+
+        self.combo_status = QComboBox()
+        for status in ProjektStatus:
+            self.combo_status.addItem(status.value, status)
+        form.addRow("Status:", self.combo_status)
+        
+        # Pipeline-Gewichtung
         self.spin_wahrscheinlichkeit = QDoubleSpinBox()
         self.spin_wahrscheinlichkeit.setRange(0.0, 100.0)
         self.spin_wahrscheinlichkeit.setDecimals(1)
         self.spin_wahrscheinlichkeit.setSuffix(" %")
-        layout.addRow("Bewilligungswahrscheinlichkeit:", self.spin_wahrscheinlichkeit)
+        self.spin_wahrscheinlichkeit.setValue(100.0)
+        form.addRow("Bewilligungswahrscheinlichkeit:", self.spin_wahrscheinlichkeit)
         
-        # Komfort-Automatik: Status ändert Wahrscheinlichkeit
         self.combo_status.currentIndexChanged.connect(self.auto_set_wahrscheinlichkeit)
-        
-        self.combo_abrechnung = QComboBox()
-        for a in Abrechnungsart:
-            self.combo_abrechnung.addItem(a.value, a)
-        layout.addRow("Abrechnungsart:", self.combo_abrechnung)
-        
-        self.spin_overhead = QDoubleSpinBox()
-        self.spin_overhead.setRange(0.0, 100.0)
-        self.spin_overhead.setSuffix(" %")
-        layout.addRow("Overhead (Gemeinkosten):", self.spin_overhead)
-        
-        self.date_start = QDateEdit()
-        self.date_start.setDate(QDate.currentDate())
-        self.date_start.setCalendarPopup(True)
-        layout.addRow("Projektbeginn:", self.date_start)
-        
+
+        # Laufzeit
+        self.date_beginn = QDateEdit()
+        self.date_beginn.setCalendarPopup(True)
+        self.date_beginn.setDate(QDate.currentDate())
+        form.addRow("Projektbeginn:", self.date_beginn)
+
         self.date_ende = QDateEdit()
-        self.date_ende.setDate(QDate.currentDate().addYears(3))
         self.date_ende.setCalendarPopup(True)
-        layout.addRow("Projektende:", self.date_ende)
-        
-        sep_budget = QLabel("<b>Personal- & Sachmittelbudgets</b>")
-        sep_budget.setStyleSheet("margin-top: 10px; color: #2980B9;")
-        layout.addRow(sep_budget)
-        
-        self.spin_bud_e1_e12 = QDoubleSpinBox()
-        self.setup_spinbox(self.spin_bud_e1_e12)
-        layout.addRow("Budget E1-E12:", self.spin_bud_e1_e12)
-        
-        self.spin_bud_e13_e15 = QDoubleSpinBox()
-        self.setup_spinbox(self.spin_bud_e13_e15)
-        layout.addRow("Budget E13-E15:", self.spin_bud_e13_e15)
-        
-        self.spin_bud_besch = QDoubleSpinBox()
-        self.setup_spinbox(self.spin_bud_besch)
-        layout.addRow("Beschäftigtenentgelt:", self.spin_bud_besch)
-        
-        self.spin_bud_sach = QDoubleSpinBox()
-        self.setup_spinbox(self.spin_bud_sach)
-        layout.addRow("Sachmittelbudget:", self.spin_bud_sach)
+        self.date_ende.setDate(QDate.currentDate().addYears(3))
+        form.addRow("Projektende:", self.date_ende)
 
-        sep_ende = QLabel("<b>Kaufmännischer Projektabschluss</b>")
-        sep_ende.setStyleSheet("margin-top: 10px; color: #2980B9;")
-        layout.addRow(sep_ende)
-
-        self.spin_rueckzahlung = QDoubleSpinBox()
-        self.setup_spinbox(self.spin_rueckzahlung)
-        layout.addRow("Nachträgliche Rückzahlung / Beanstandung:", self.spin_rueckzahlung)
-
-        self.combo_verbleib = QComboBox()
-        self.combo_verbleib.addItems([
-            "Rückzahlung an Zuwendungsgeber",
-            "Verfallen (Standard)",
-            "Ausnahmsweise übertragen"
-        ])
-        layout.addRow("Verbleib der Restmittel am Ende:", self.combo_verbleib)
+        # Budgets
+        self.spin_e13 = self._create_budget_spinbox()
+        form.addRow("Budget E13-E15 (€):", self.spin_e13)
+        self.spin_e1 = self._create_budget_spinbox()
+        form.addRow("Budget E1-E12 (€):", self.spin_e1)
+        self.spin_hiwi = self._create_budget_spinbox()
+        form.addRow("Budget HiWi (€):", self.spin_hiwi)
+        self.spin_sach = self._create_budget_spinbox()
+        form.addRow("Budget Sachmittel (€):", self.spin_sach)
         
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.daten_speichern)
-        buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
+        # NEU: Overhead & Konten-Zuweisung
+        form.addRow(QLabel("<b>Trennungsrechnung & Projektabschluss</b>"), None)
         
-        if self.projekt_id:
-            self.lade_projekt_daten()
+        self.combo_regel = QComboBox()
+        self.combo_regel.addItem("Keine Regel", None)
+        for r in self.regeln:
+            self.combo_regel.addItem(f"{r.name} (Inst: {r.institut_pct}%)", r.id)
+        form.addRow("Overhead-Regel:", self.combo_regel)
+        
+        self.combo_konto = QComboBox()
+        self.combo_konto.addItem("Kein Zielkonto", None)
+        for k in self.konten:
+            self.combo_konto.addItem(k.name, k.id)
+        form.addRow("Zielkonto (für Rücklagen):", self.combo_konto)
+        
+        self.spin_restmittel = QDoubleSpinBox()
+        self.spin_restmittel.setRange(0.0, 100.0)
+        self.spin_restmittel.setSuffix(" %")
+        self.spin_restmittel.setToolTip("Wie viel Prozent des Restbudgets (ohne Overhead) dürfen bei Projektabschluss ins Institut überführt werden? (z.B. Industrie = 100%)")
+        form.addRow("Verbleibende Restmittel für Institut:", self.spin_restmittel)
 
-    def setup_spinbox(self, spinbox):
-        spinbox.setRange(0.0, 99999999.0)
-        spinbox.setSingleStep(1000.0)
-        spinbox.setSuffix(" €")
-        spinbox.setGroupSeparatorShown(True)
+        layout.addLayout(form)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_save = QPushButton("💾 Speichern")
+        btn_save.setStyleSheet("background-color: #27AE60; color: white; font-weight: bold; padding: 6px;")
+        btn_save.clicked.connect(self.daten_speichern)
+        
+        btn_cancel = QPushButton("Abbrechen")
+        btn_cancel.clicked.connect(self.reject)
+        
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_cancel)
+        btn_layout.addWidget(btn_save)
+        layout.addLayout(btn_layout)
+
+    def _create_budget_spinbox(self):
+        spin = QDoubleSpinBox()
+        spin.setRange(0.0, 99999999.0)
+        spin.setDecimals(2)
+        spin.setGroupSeparatorShown(True)
+        return spin
+
+    def auto_set_wahrscheinlichkeit(self):
+        status = self.combo_status.currentData()
+        if status == ProjektStatus.BEWILLIGT:
+            self.spin_wahrscheinlichkeit.setValue(100.0)
+        elif status == ProjektStatus.ABGELEHNT:
+            self.spin_wahrscheinlichkeit.setValue(0.0)
 
     def lade_projekt_daten(self):
         session = get_session()
         try:
             p = session.query(Projekt).filter_by(id=self.projekt_id).first()
-            if p:
-                self.txt_name.setText(p.projektname)
+            if not p: return
+
+            self.txt_name.setText(p.projektname)
+            
+            idx = self.combo_status.findData(p.status)
+            if idx >= 0: self.combo_status.setCurrentIndex(idx)
                 
-                idx_s = self.combo_status.findData(p.status)
-                if idx_s >= 0: self.combo_status.setCurrentIndex(idx_s)
-                
-                idx_a = self.combo_abrechnung.findData(p.abrechnungsart)
-                if idx_a >= 0: self.combo_abrechnung.setCurrentIndex(idx_a)
-                
-                self.spin_overhead.setValue(p.overhead_pct)
-                
-                self.date_start.setDate(QDate(p.projektbeginn.year, p.projektbeginn.month, p.projektbeginn.day))
+            prob = getattr(p, "bewilligungswahrscheinlichkeit_pct", 100.0)
+            self.spin_wahrscheinlichkeit.setValue(prob if prob is not None else 100.0)
+
+            if p.projektbeginn:
+                self.date_beginn.setDate(QDate(p.projektbeginn.year, p.projektbeginn.month, p.projektbeginn.day))
+            if p.projektende:
                 self.date_ende.setDate(QDate(p.projektende.year, p.projektende.month, p.projektende.day))
+
+            self.spin_e13.setValue(p.personalbudget_e13_e15 or 0.0)
+            self.spin_e1.setValue(p.personalbudget_e1_e12 or 0.0)
+            self.spin_hiwi.setValue(p.personalbudget_besch_entgelt or 0.0)
+            self.spin_sach.setValue(p.sachmittelbudget or 0.0)
+            
+            if getattr(p, "overhead_regel_id", None):
+                idx_r = self.combo_regel.findData(p.overhead_regel_id)
+                if idx_r >= 0: self.combo_regel.setCurrentIndex(idx_r)
                 
-                self.spin_bud_e1_e12.setValue(p.personalbudget_e1_e12 or 0.0)
-                self.spin_bud_e13_e15.setValue(p.personalbudget_e13_e15 or 0.0)
-                self.spin_bud_besch.setValue(p.personalbudget_besch_entgelt or 0.0)
-                self.spin_bud_sach.setValue(p.sachmittelbudget or 0.0)
+            if getattr(p, "ziel_konto_id", None):
+                idx_k = self.combo_konto.findData(p.ziel_konto_id)
+                if idx_k >= 0: self.combo_konto.setCurrentIndex(idx_k)
+                
+            self.spin_restmittel.setValue(getattr(p, "restmittel_institut_pct", 0.0) or 0.0)
 
-                self.spin_rueckzahlung.setValue(getattr(p, "tatsaechliche_rueckzahlung", 0.0) or 0.0)
-                verbleib = getattr(p, "restmittel_verbleib_typ", "Rückzahlung an Zuwendungsgeber")
-                idx_v = self.combo_verbleib.findText(verbleib)
-                if idx_v >= 0: self.combo_verbleib.setCurrentIndex(idx_v)
-
-                # Beim Laden auslesen (Harter Absturz-Schutz, falls None)
-                prob = getattr(p, "bewilligungswahrscheinlichkeit_pct", 100.0)
-                if prob is None: prob = 100.0
-                self.spin_wahrscheinlichkeit.setValue(prob)
         finally:
             session.close()
 
     def daten_speichern(self):
-        if not self.txt_name.text().strip():
-            QMessageBox.warning(self, "Fehler", "Bitte einen Projektnamen eingeben.")
+        name = self.txt_name.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Fehler", "Der Projektname darf nicht leer sein.")
             return
-            
+
         session = get_session()
         try:
             if self.projekt_id:
@@ -156,40 +196,29 @@ class ProjektBearbeitenDialog(QDialog):
             else:
                 p = Projekt()
                 session.add(p)
-                
-            p.projektname = self.txt_name.text().strip()
+
+            p.projektname = name
             p.status = self.combo_status.currentData()
-            p.abrechnungsart = self.combo_abrechnung.currentData()
-            p.overhead_pct = self.spin_overhead.value()
-            p.projektbeginn = self.date_start.date().toPyDate()
-            p.projektende = self.date_ende.date().toPyDate()
-            
-            p.personalbudget_e1_e12 = self.spin_bud_e1_e12.value()
-            p.personalbudget_e13_e15 = self.spin_bud_e13_e15.value()
-            p.personalbudget_besch_entgelt = self.spin_bud_besch.value()
-            p.sachmittelbudget = self.spin_bud_sach.value()
-            
-            p.tatsaechliche_rueckzahlung = self.spin_rueckzahlung.value()
-            p.restmittel_verbleib_typ = self.combo_verbleib.currentText()
             p.bewilligungswahrscheinlichkeit_pct = self.spin_wahrscheinlichkeit.value()
+            p.projektbeginn = self.date_beginn.date().toPyDate()
+            p.projektende = self.date_ende.date().toPyDate()
+
+            p.personalbudget_e13_e15 = self.spin_e13.value()
+            p.personalbudget_e1_e12 = self.spin_e1.value()
+            p.personalbudget_besch_entgelt = self.spin_hiwi.value()
+            p.sachmittelbudget = self.spin_sach.value()
+            
+            p.overhead_regel_id = self.combo_regel.currentData()
+            p.ziel_konto_id = self.combo_konto.currentData()
+            p.restmittel_institut_pct = self.spin_restmittel.value()
+                        
             session.commit()
             self.accept()
         except Exception as e:
             session.rollback()
-            QMessageBox.critical(self, "Fehler", f"Konnte Projekt nicht speichern:\n{str(e)}")
+            QMessageBox.critical(self, "Fehler", str(e))
         finally:
             session.close()
-
-    def auto_set_wahrscheinlichkeit(self):  
-        status = self.combo_status.currentData()
-        if status == ProjektStatus.BEWILLIGT:
-            self.spin_wahrscheinlichkeit.setValue(100.0)
-        elif status == ProjektStatus.ABGELEHNT:
-            self.spin_wahrscheinlichkeit.setValue(0.0)
-        elif status == ProjektStatus.BEANTRAGT:
-            self.spin_wahrscheinlichkeit.setValue(50.0)
-        else:
-            self.spin_wahrscheinlichkeit.setValue(100.0)  # Default
 
 class ProjekteView(QWidget):
     def __init__(self):
@@ -228,8 +257,7 @@ class ProjekteView(QWidget):
         main_layout.addLayout(toolbar)
         
         self.table = QTableWidget()
-        # NEU: Spalte "Chance" eingefügt
-        self.spalten = ["ID", "Projektname", "Status", "Chance", "Laufzeit", "Budget (Personal)", "Sachmittel", "Overhead"]
+        self.spalten = ["ID", "Projektname", "Status", "Chance", "Laufzeit", "Budget (Personal)", "Sachmittel", "Overhead & Konto"]
         self.table.setColumnCount(len(self.spalten))
         self.table.setHorizontalHeaderLabels(self.spalten)
         self.table.setColumnHidden(0, True)
@@ -240,9 +268,9 @@ class ProjekteView(QWidget):
         
         main_layout.addWidget(self.table)
 
-    def format_euro(self, amount):
-        return f"{amount:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
-
+    def format_euro(self, val):
+        if val == 0: return "-"
+        return f"{val:,.0f} €".replace(",", "X").replace(".", ",").replace("X", ".")
 
     def load_projekte(self):
         session = get_session()
@@ -263,7 +291,6 @@ class ProjekteView(QWidget):
                     status_item.setForeground(Qt.GlobalColor.red)
                 self.table.setItem(row, 2, status_item)
                 
-                # NEU: Wahrscheinlichkeit anzeigen
                 prob = getattr(p, "bewilligungswahrscheinlichkeit_pct", 100.0)
                 if prob is None: prob = 100.0
                 prob_item = QTableWidgetItem(f"{prob:.0f} %")
@@ -277,7 +304,14 @@ class ProjekteView(QWidget):
                 pers_bud = (p.personalbudget_e1_e12 or 0) + (p.personalbudget_e13_e15 or 0) + (p.personalbudget_besch_entgelt or 0)
                 self.table.setItem(row, 5, QTableWidgetItem(self.format_euro(pers_bud)))
                 self.table.setItem(row, 6, QTableWidgetItem(self.format_euro(p.sachmittelbudget or 0)))
-                self.table.setItem(row, 7, QTableWidgetItem(f"{p.overhead_pct} %"))
+                
+                regel_text = f"{p.overhead_pct}% (Keine Regel)"
+                if getattr(p, "overhead_regel_id", None) and p.overhead_regel:
+                    regel_text = f"{p.overhead_regel.name}"
+                    if getattr(p, "ziel_konto_id", None) and p.ziel_konto:
+                        regel_text += f"\n-> {p.ziel_konto.name}"
+                
+                self.table.setItem(row, 7, QTableWidgetItem(regel_text))
         finally:
             session.close()
 
@@ -297,21 +331,24 @@ class ProjekteView(QWidget):
     def projekt_loeschen(self):
         row = self.table.currentRow()
         if row < 0: return
+        
         p_id = int(self.table.item(row, 0).text())
         name = self.table.item(row, 1).text()
-        antwort = QMessageBox.question(self, "Löschen bestätigen", 
-            f"Möchten Sie das Projekt '{name}' und alle zugehörigen Personal-Zuweisungen wirklich löschen?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if antwort == QMessageBox.StandardButton.Yes:
+        
+        reply = QMessageBox.question(self, 'Löschen bestätigen', 
+                                     f'Soll das Projekt "{name}" wirklich gelöscht werden?\nAchtung: Das löscht auch alle Zuweisungen und Ausgaben!',
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        
+        if reply == QMessageBox.StandardButton.Yes:
             session = get_session()
             try:
-                p = session.query(Projekt).filter_by(id=p_id).first()
-                if p:
-                    session.delete(p)
+                projekt = session.query(Projekt).filter_by(id=p_id).first()
+                if projekt:
+                    session.delete(projekt)
                     session.commit()
                     self.load_projekte()
             except Exception as e:
                 session.rollback()
-                QMessageBox.critical(self, "Fehler", f"Fehler beim Löschen:\n{str(e)}")
+                QMessageBox.critical(self, "Fehler", f"Das Projekt konnte nicht gelöscht werden.\n\nDetails:\n{str(e)}")
             finally:
                 session.close()

@@ -11,6 +11,7 @@ from gui.views.view_system import SystemAdminMainView
 from gui.views.view_settings import SettingsView
 from gui.views.view_vakanzen import VakanzenView
 from gui.views.view_ausgaben import AusgabenView
+from gui.views.view_stammdaten import StammdatenView    
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -34,6 +35,8 @@ class MainWindow(QMainWindow):
         self.tab_mitarbeiter = MitarbeiterView()
         self.tab_admin = SystemAdminMainView()
         self.tab_settings = SettingsView()
+        self.tab_stammdaten = StammdatenView()  # Neue Ansicht für Stammdaten
+
 
         # Tabs dem Fenster in logischer Prozess-Reihenfolge hinzufügen
         self.tabs.addTab(self.tab_controlling, "📊 Controlling & Dashboards")
@@ -43,6 +46,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_projekte, "📂 Projekt-Verwaltung")
         self.tabs.addTab(self.tab_ausgaben, "🛒 Ausgaben")
         self.tabs.addTab(self.tab_mitarbeiter, "👥 Mitarbeiter-Stammdaten")
+        self.tabs.addTab(self.tab_stammdaten, "🗂️ Stammdaten & Konten")  # Tab für Stammdaten hinzufügen
         self.tabs.addTab(self.tab_admin, "⚙️ System & Administration")
         self.tabs.addTab(self.tab_settings, "🎨 Design & Einstellungen")
 

@@ -1,145 +1,204 @@
-from datetime import date
 import calendar
+from datetime import date
 
-from core.models import Projekt, Zuweisung, ZuweisungsTyp
+from core.models import Projekt, Zuweisung, ZuweisungsTyp, AusgabePosition, AusgabenStatus, Kostenart
 from core.journal import generiere_mitarbeiter_lohnjournal
 
-def generiere_projekt_controlling(session, projekt_id, stichtag):
+def generiere_projekt_controlling(session, projekt_id, stichtag=None):
     """
-    Berechnet die Finanzen eines Projekts auf Basis der exakten Lohnjournale
-    der zugewiesenen Mitarbeiter. Setzt 'Management by Exception' um.
+    Kombiniert die exakten HR-Lohnjournale mit dem Sachmittel-/Ausgaben-Journal.
+    Integriert Management-by-Exception (Stichtag) und trennt direkte Kosten
+    strikt vom erwirtschafteten Overhead des Instituts.
     """
+    if stichtag is None:
+        stichtag = date.today()
+
     projekt = session.query(Projekt).filter_by(id=projekt_id).first()
     if not projekt:
-        return None
+        raise ValueError("Projekt nicht gefunden")
 
-    # 1. Projekt-Gesamtbudget ermitteln
-    budget_gesamt = (projekt.personalbudget_e1_e12 + 
-                     projekt.personalbudget_e13_e15 + 
-                     projekt.personalbudget_besch_entgelt + 
-                     projekt.sachmittelbudget)
+    if not projekt.projektbeginn or not projekt.projektende:
+        raise ValueError("Dem Projekt fehlen Start- oder Enddatum.")
 
-    # Overhead-Faktor (z.B. 20% Overhead -> 1.20)
-    overhead_faktor = 1.0 + (projekt.overhead_pct / 100.0)
+    # 1. Budgets & Parameter (REINE DIREKTKOSTEN!)
+    budget_gesamt = (
+        (projekt.personalbudget_e1_e12 or 0.0) + 
+        (projekt.personalbudget_e13_e15 or 0.0) + 
+        (projekt.personalbudget_besch_entgelt or 0.0) + 
+        (projekt.sachmittelbudget or 0.0)
+    )
+    
+    # Exakte Trennung nach Instituts-Anteil für das Overhead-Sparbuch
+    institut_pct = 0.0
+    if getattr(projekt, "overhead_regel", None):
+        institut_pct = projekt.overhead_regel.institut_pct / 100.0
 
-    # Laufzeit des Projekts
-    start_y = projekt.projektbeginn.year
-    start_m = projekt.projektbeginn.month
-    end_y = projekt.projektende.year
-    end_m = projekt.projektende.month
-
-    # 2. Alle beteiligten Mitarbeiter identifizieren
-    zuweisungen = session.query(Zuweisung).filter_by(projekt_id=projekt_id).all()
-    ma_ids = set([z.mitarbeiter_id for z in zuweisungen if z.mitarbeiter_id])
-
-    # 3. Lohnjournale cachen (Performance!)
-    ma_journale = {}
-    for ma_id in ma_ids:
-        journal = generiere_mitarbeiter_lohnjournal(session, ma_id, start_y, start_m, end_y, end_m)
-        # NEU: Wir speichern das komplette Monats-Paket, nicht nur eine Zahl
-        ma_journale[ma_id] = {e["monat"]: e for e in journal}
-
-    ist_gesamt = 0.0
-    obligo_gesamt = 0.0
-    plan_gesamt = 0.0
-    monats_verlauf = []
-
+    start_y, start_m = projekt.projektbeginn.year, projekt.projektbeginn.month
+    end_y, end_m = projekt.projektende.year, projekt.projektende.month
     stichtag_monat = date(stichtag.year, stichtag.month, 1)
 
-    y, m = start_y, start_m
-    while y < end_y or (y == end_y and m <= end_m):
+    # 2. Container initialisieren
+    monate_dict = {}
+    
+    def init_month(y, m):
+        m_str = f"{m:02d}/{y}"
+        if m_str not in monate_dict:
+            monate_dict[m_str] = {
+                "monat": m_str,
+                "ist": {"e13_15": (0.0, 0.0), "e1_12": (0.0, 0.0), "hiwi": (0.0, 0.0), "sachmittel": (0.0, 0.0)},
+                "obligo": {"e13_15": (0.0, 0.0), "e1_12": (0.0, 0.0), "hiwi": (0.0, 0.0), "sachmittel": (0.0, 0.0)},
+                "plan": {"e13_15": (0.0, 0.0), "e1_12": (0.0, 0.0), "hiwi": (0.0, 0.0), "sachmittel": (0.0, 0.0)},
+                "sort_key": y * 12 + m
+            }
+        return m_str
+
+    # Alle Projekt-Monate vorab anlegen, um Lücken in den Graphen zu vermeiden
+    start_abs = start_y * 12 + start_m
+    end_abs = end_y * 12 + end_m
+    for sm in range(start_abs, end_abs + 1):
+        y = sm // 12
+        m = sm % 12
+        if m == 0: y -= 1; m = 12
+        init_month(y, m)
+
+    def add_to_details(m_str, typ, topf, cf_wert, ctrl_wert):
+        alt_cf, alt_ctrl = monate_dict[m_str][typ][topf]
+        monate_dict[m_str][typ][topf] = (alt_cf + cf_wert, alt_ctrl + ctrl_wert)
+
+    # ==========================================
+    # 3. PERSONAL-KOSTEN (HR Matrix)
+    # ==========================================
+    zuweisungen = session.query(Zuweisung).filter_by(projekt_id=projekt_id).all()
+    ma_ids = set([z.mitarbeiter_id for z in zuweisungen if z.mitarbeiter_id])
+    
+    ma_journale = {}
+    for ma_id in ma_ids:
+        try:
+            journal = generiere_mitarbeiter_lohnjournal(session, ma_id, start_y, start_m, end_y, end_m)
+            ma_journale[ma_id] = {e["monat"]: e for e in journal}
+        except ValueError:
+            continue
+
+    for sm in range(start_abs, end_abs + 1):
+        y = sm // 12
+        m = sm % 12
+        if m == 0: y -= 1; m = 12
+        
         loop_date = date(y, m, 1)
         loop_end = date(y, m, calendar.monthrange(y, m)[1])
-        monat_str = f"{m:02d}/{y}"
-
-        # Neue, aufgeschlüsselte Monats-Container
-        m_kosten = {
-            "ist": {"e13_15": 0.0, "e1_12": 0.0, "hiwi": 0.0, "sachmittel": 0.0},
-            "obligo": {"e13_15": 0.0, "e1_12": 0.0, "hiwi": 0.0, "sachmittel": 0.0},
-            "plan": {"e13_15": 0.0, "e1_12": 0.0, "hiwi": 0.0, "sachmittel": 0.0},
-        }
-
+        m_str = f"{m:02d}/{y}"
+        
         for ma_id in ma_ids:
-            aktive_z = [z for z in zuweisungen if z.mitarbeiter_id == ma_id and z.start_datum <= loop_end and z.end_datum >= loop_date]
+            aktive_z = [z for z in zuweisungen if z.mitarbeiter_id == ma_id and z.start_datum <= loop_end and (not z.end_datum or z.end_datum >= loop_date)]
             if not aktive_z: continue
 
             z_ist = next((z for z in aktive_z if z.typ == ZuweisungsTyp.IST), None)
             z_vertrag = next((z for z in aktive_z if z.typ == ZuweisungsTyp.VERTRAG), None)
             z_plan = next((z for z in aktive_z if z.typ == ZuweisungsTyp.PLANUNG), None)
 
-            anteil, typ = 0.0, None
-            if z_ist: anteil, typ = z_ist.anteil_pct, ZuweisungsTyp.IST
-            elif z_vertrag: anteil, typ = z_vertrag.anteil_pct, ZuweisungsTyp.VERTRAG
-            elif z_plan: anteil, typ = z_plan.anteil_pct, ZuweisungsTyp.PLANUNG
+            anteil, z_typ = 0.0, None
+            if z_ist: anteil, z_typ = z_ist.anteil_pct, ZuweisungsTyp.IST
+            elif z_vertrag: anteil, z_typ = z_vertrag.anteil_pct, ZuweisungsTyp.VERTRAG
+            elif z_plan: anteil, z_typ = z_plan.anteil_pct, ZuweisungsTyp.PLANUNG
 
             if anteil > 0:
-                eintrag = ma_journale[ma_id].get(monat_str, {})
-                
-                # Wir holen BEIDE Werte, um später im Dashboard umschalten zu können
-                kosten_ist = eintrag.get("gesamtkosten_ist", 0.0) * anteil * overhead_faktor
-                kosten_rueck = eintrag.get("gesamtkosten_inkl_rueck", 0.0) * anteil * overhead_faktor
+                eintrag = ma_journale.get(ma_id, {}).get(m_str, {})
+                # Reine Kosten (OHNE Overhead-Multiplikator)
+                kosten_ist = eintrag.get("gesamtkosten_ist", 0.0) * anteil
+                kosten_rueck = eintrag.get("gesamtkosten_inkl_rueck", 0.0) * anteil
                 
                 eg_str = eintrag.get("entgeltgruppe", "")
-                
-                # Kategorisierung
-                topf = "e1_12" # Fallback
-                if "SHK" in eg_str or "WHK" in eg_str:
-                    topf = "hiwi"
-                elif any(x in eg_str for x in ["E13", "E14", "E15", "13Ü", "15Ü"]):
-                    topf = "e13_15"
+                topf = "e1_12"
+                if "SHK" in eg_str or "WHK" in eg_str or "Student" in eg_str: topf = "hiwi"
+                elif any(x in eg_str for x in ["E13", "E14", "E15", "13Ü", "15Ü"]): topf = "e13_15"
 
-                # Einordnung nach Verbindlichkeit
-                ziel_typ = "ist" if loop_date < stichtag_monat else ("ist" if typ == ZuweisungsTyp.IST else ("obligo" if typ == ZuweisungsTyp.VERTRAG else "plan"))
+                # Management by Exception
+                ziel_typ = "ist" if loop_date < stichtag_monat else ("ist" if z_typ == ZuweisungsTyp.IST else ("obligo" if z_typ == ZuweisungsTyp.VERTRAG else "plan"))
+                add_to_details(m_str, ziel_typ, topf, kosten_ist, kosten_rueck)
 
-                # Wir speichern ein Tupel (Cash-Flow, Controlling-Wert)
-                akt_wert = m_kosten[ziel_typ].get(topf, (0.0, 0.0))
-                if isinstance(akt_wert, float): akt_wert = (akt_wert, akt_wert) # Fallback
-                
-                m_kosten[ziel_typ][topf] = (akt_wert[0] + kosten_ist, akt_wert[1] + kosten_rueck)
-
-        # Aggregation für die Rückgabe
-        def get_val(typ_dict, topf, idx):
-            v = typ_dict.get(topf, (0.0, 0.0))
-            return v[idx] if isinstance(v, tuple) else v
-
-        m_ist_cf = sum(get_val(m_kosten["ist"], t, 0) for t in ["e13_15", "e1_12", "hiwi"])
-        m_ist_ctrl = sum(get_val(m_kosten["ist"], t, 1) for t in ["e13_15", "e1_12", "hiwi"])
+    # ==========================================
+    # 4. SACHMITTEL & REISEKOSTEN (Journal)
+    # ==========================================
+    ausgaben = session.query(AusgabePosition).filter_by(projekt_id=projekt_id).all()
+    for pos in ausgaben:
+        kopf = pos.kopf
         
-        m_obligo_cf = sum(get_val(m_kosten["obligo"], t, 0) for t in ["e13_15", "e1_12", "hiwi"])
-        m_obligo_ctrl = sum(get_val(m_kosten["obligo"], t, 1) for t in ["e13_15", "e1_12", "hiwi"])
+        datum = kopf.bestelldatum
+        if kopf.status == AusgabenStatus.BEZAHLT and kopf.rechnungsdatum:
+            datum = kopf.rechnungsdatum
+        if not datum: 
+            datum = stichtag
+            
+        m_str = init_month(datum.year, datum.month)
         
-        m_plan_cf = sum(get_val(m_kosten["plan"], t, 0) for t in ["e13_15", "e1_12", "hiwi"])
-        m_plan_ctrl = sum(get_val(m_kosten["plan"], t, 1) for t in ["e13_15", "e1_12", "hiwi"])
+        topf = "sachmittel"
+        if pos.kostenart == Kostenart.E12_E15: topf = "e13_15"
+        elif pos.kostenart == Kostenart.E1_E11: topf = "e1_12"
+        elif pos.kostenart in [Kostenart.LOHNEMPFAENGER, Kostenart.BESCHAEFTIGUNGSENTGELTE]: topf = "hiwi"
+        
+        # Reine Kosten (OHNE Overhead-Multiplikator)
+        wert = pos.betrag_euro
+        
+        if kopf.status == AusgabenStatus.PLAN:
+            add_to_details(m_str, "plan", topf, wert, wert)
+        elif kopf.status == AusgabenStatus.BESTELLT:
+            add_to_details(m_str, "obligo", topf, wert, wert)
+        elif kopf.status == AusgabenStatus.BEZAHLT:
+            add_to_details(m_str, "ist", topf, wert, wert)
 
-        ist_gesamt += m_ist_cf # Für die globale Anzeige nutzen wir harte Ist-Werte
-        obligo_gesamt += m_obligo_ctrl
-        plan_gesamt += m_plan_ctrl
-
+    # ==========================================
+    # 5. AGGREGATION FÜR DASHBOARDS & SPARBUCH
+    # ==========================================
+    monats_verlauf = []
+    summe_ist_cf = summe_ist_ctrl = summe_obligo = summe_plan = 0.0
+    
+    # Sicherstellen, dass das Sachmittel-Ausgabenjournal in die Summen fließt
+    alle_toepfe = ["e13_15", "e1_12", "hiwi", "sachmittel"]
+    
+    sorted_months = sorted(monate_dict.values(), key=lambda d: d["sort_key"])
+    for d in sorted_months:
+        m_ist_cf = sum(d["ist"][t][0] for t in alle_toepfe)
+        m_ist_ctrl = sum(d["ist"][t][1] for t in alle_toepfe)
+        
+        m_obligo_cf = sum(d["obligo"][t][0] for t in alle_toepfe)
+        m_obligo_ctrl = sum(d["obligo"][t][1] for t in alle_toepfe)
+        
+        m_plan_cf = sum(d["plan"][t][0] for t in alle_toepfe)
+        m_plan_ctrl = sum(d["plan"][t][1] for t in alle_toepfe)
+        
+        summe_ist_cf += m_ist_cf
+        summe_ist_ctrl += m_ist_ctrl
+        summe_obligo += m_obligo_ctrl
+        summe_plan += m_plan_ctrl
+            
         monats_verlauf.append({
-            "monat": monat_str,
+            "monat": d["monat"],
             "ist_kosten_cf": m_ist_cf,
             "ist_kosten_ctrl": m_ist_ctrl,
             "obligo": m_obligo_ctrl,
             "plan_kosten": m_plan_ctrl,
-            "details": m_kosten # Der komplette Baukasten für das Dashboard
+            "details": {
+                "ist": d["ist"],
+                "obligo": d["obligo"],
+                "plan": d["plan"]
+            }
         })
 
-        m += 1
-        if m > 12:
-            m = 1
-            y += 1
-
-    # 5. Restmittel berechnen
-    verfuegbar = budget_gesamt - ist_gesamt - obligo_gesamt - plan_gesamt
-    verfuegbar_pct = (verfuegbar / budget_gesamt * 100.0) if budget_gesamt > 0 else 0.0
+    verfuegbar = budget_gesamt - summe_ist_ctrl - summe_obligo
+    
+    # Das echte Instituts-Sparbuch: Wird nur aus bezahlten Ist-Kosten (Cash-Flow) gebildet
+    erwirtschafteter_overhead_institut = summe_ist_cf * institut_pct
 
     return {
+        "projekt_id": projekt_id,
         "projekt": projekt.projektname,
+        "projektname": projekt.projektname,
         "budget_gesamt": budget_gesamt,
-        "ist_buchungen_gesamt": ist_gesamt,
-        "obligo_gesamt": obligo_gesamt,
-        "plan_ausgaben_gesamt": plan_gesamt,
+        "ist_kosten_cf": summe_ist_cf,
+        "ist_kosten_ctrl": summe_ist_ctrl,
+        "obligo": summe_obligo,
+        "plan_kosten": summe_plan,
         "verfuegbare_mittel": verfuegbar,
-        "verfuegbar_pct": round(verfuegbar_pct, 1),
+        "erwirtschafteter_overhead": erwirtschafteter_overhead_institut,
         "monats_verlauf": monats_verlauf
     }
