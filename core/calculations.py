@@ -1,7 +1,7 @@
 import calendar
 from datetime import date
 
-from core.models import Projekt, Zuweisung, ZuweisungsTyp, AusgabePosition, AusgabenStatus, Kostenart, KontoBuchung
+from core.models import Projekt, Zuweisung, ZuweisungsTyp, AusgabePosition, AusgabenStatus, Kostenart, KontoBuchung, ProjektStatus
 from core.journal import generiere_mitarbeiter_lohnjournal
 
 def generiere_projekt_controlling(session, projekt_id, stichtag=None):
