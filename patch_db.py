@@ -60,6 +60,23 @@ def patch_database2():
             print("Hinweis: Spalten existieren vermutlich bereits oder es gab einen Fehler:")
             print(e)
 
+def patch_buchungen():
+    Base.metadata.create_all(engine)
+    print("✅ Tabelle 'konto_buchung' erfolgreich erstellt!")
+
+def patch_guthaben():
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE instituts_konto ADD COLUMN guthaben FLOAT DEFAULT 0.0"))
+            conn.commit()
+            print("✅ Erfolgreich: Spalte 'guthaben' wurde zum Institutskonto hinzugefügt!")
+        except Exception as e:
+            print("Fehler oder Spalte existiert bereits:")
+            print(e)
+
 if __name__ == "__main__":
-    patch_database()
-    patch_database2()
+    #patch_database()
+    #patch_database2()
+    #patch_guthaben()
+    patch_buchungen()
+    

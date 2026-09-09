@@ -210,8 +210,11 @@ class InstitutsKonto(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False) # z.B. "Rücklage Industrie"
     kontonummer = Column(String, nullable=True)
-    
+    guthaben = Column(Float, default=0.0) # <--- NEU: Das physische Sparbuch
+     
     projekte = relationship("Projekt", back_populates="ziel_konto")
+    buchungen = relationship("KontoBuchung", back_populates="konto", cascade="all, delete-orphan")
+
 
 class OverheadRegel(Base):
     """Regelsets für die Aufteilung der Gemeinkosten."""
@@ -223,3 +226,16 @@ class OverheadRegel(Base):
     verwaltung_pct = Column(Float, nullable=False, default=8.0)
     
     projekte = relationship("Projekt", back_populates="overhead_regel")
+
+  
+
+class KontoBuchung(Base):
+    """Revisionssicheres Journal für Institutskonten"""
+    __tablename__ = 'konto_buchung'
+    id = Column(Integer, primary_key=True)
+    konto_id = Column(Integer, ForeignKey('instituts_konto.id'), nullable=False)
+    datum = Column(Date, nullable=False)
+    beschreibung = Column(String, nullable=False)
+    betrag = Column(Float, nullable=False)
+    
+    konto = relationship("InstitutsKonto", back_populates="buchungen")

@@ -211,6 +211,12 @@ class ProjektBearbeitenDialog(QDialog):
             p.overhead_regel_id = self.combo_regel.currentData()
             p.ziel_konto_id = self.combo_konto.currentData()
             p.restmittel_institut_pct = self.spin_restmittel.value()
+
+            if p.status == ProjektStatus.BEENDET:
+                from core.calculations import schliesse_projekt_ab
+                # Wir müssen erst flushen, damit die DB den aktuellen Status kennt
+                session.flush() 
+                schliesse_projekt_ab(session, p.id)
                         
             session.commit()
             self.accept()

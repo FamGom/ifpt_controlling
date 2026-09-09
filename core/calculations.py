@@ -1,7 +1,7 @@
 import calendar
 from datetime import date
 
-from core.models import Projekt, Zuweisung, ZuweisungsTyp, AusgabePosition, AusgabenStatus, Kostenart
+from core.models import Projekt, Zuweisung, ZuweisungsTyp, AusgabePosition, AusgabenStatus, Kostenart, KontoBuchung
 from core.journal import generiere_mitarbeiter_lohnjournal
 
 def generiere_projekt_controlling(session, projekt_id, stichtag=None):
@@ -202,3 +202,56 @@ def generiere_projekt_controlling(session, projekt_id, stichtag=None):
         "erwirtschafteter_overhead": erwirtschafteter_overhead_institut,
         "monats_verlauf": monats_verlauf
     }
+
+def schliesse_projekt_ab(session, projekt_id):
+    """
+    Führt den kaufmännischen Projektabschluss durch:
+    1. Löscht offene Obligos/Pläne.
+    2. Bucht Overhead und erlaubte Restmittel auf das Institutskonto.
+    3. Nullt das Projektbudget auf exakt die Ist-Kosten aus (PT-Rückforderung).
+    """
+    projekt = session.query(Projekt).filter_by(id=projekt_id).first()
+    if not projekt or projekt.status == ProjektStatus.ABGESCHLOSSEN:
+        return
+
+    # 1. Offene Bestellungen/Pläne (Obligos) hart löschen, da Projekt endet
+    offene_positionen = session.query(AusgabePosition).join(AusgabeKopf).filter(
+        AusgabePosition.projekt_id == projekt_id,
+        AusgabeKopf.status != AusgabenStatus.BEZAHLT
+    ).all()
+    for pos in offene_positionen:
+        session.delete(pos)
+    session.flush()
+
+    # 2. Finalen Kassensturz berechnen (NUR Ist-Kosten verbleiben)
+    report = generiere_projekt_controlling(session, projekt_id)
+    
+    # 3. Geld auf Institutskonto transferieren & Beleg schreiben
+    if projekt.ziel_konto:
+        overhead = report.get("erwirtschafteter_overhead", 0.0)
+        restmittel_pct = getattr(projekt, "restmittel_institut_pct", 0.0) / 100.0
+        erlaubte_restmittel = report.get("verfuegbare_mittel", 0.0) * restmittel_pct
+        
+        gesamt_transfer = overhead + erlaubte_restmittel
+        
+        if gesamt_transfer > 0:
+            buchung = KontoBuchung(
+                konto_id=projekt.ziel_konto.id,
+                datum=date.today(),
+                beschreibung=f"Projektabschluss: {projekt.projektname} (Overhead & Restmittel)",
+                betrag=gesamt_transfer
+            )
+            session.add(buchung)
+            projekt.ziel_konto.guthaben = (projekt.ziel_konto.guthaben or 0.0) + gesamt_transfer
+
+    # 4. Projektbudget bilanzneutral ausnullen (Reste an PT zurückgeben)
+    ist_summe = report.get("ist_kosten_cf", 0.0)
+    b_personal = (projekt.personalbudget_e1_e12 or 0) + (projekt.personalbudget_e13_e15 or 0) + (projekt.personalbudget_besch_entgelt or 0)
+    b_sach = (projekt.sachmittelbudget or 0)
+    
+    # Wir reduzieren das Sachmittelbudget so, dass Budget = Ist-Kosten (Verfügbar = 0)
+    # Das markiert den kaufmännischen Abschluss
+    differenz = (b_personal + b_sach) - ist_summe
+    projekt.sachmittelbudget = b_sach - differenz
+    
+    projekt.status = ProjektStatus.BEENDET
