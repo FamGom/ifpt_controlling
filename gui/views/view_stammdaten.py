@@ -23,32 +23,18 @@ class KontoBearbeitenDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
         
-        self.txt_name = QLineEdit()
-        self.txt_name.setPlaceholderText("z.B. Freie Drittmittel")
-        form.addRow("Kontoname:", self.txt_name)
+        self.txt_name = QLineEdit(); form.addRow("Kontoname:", self.txt_name)
+        self.txt_nummer = QLineEdit(); form.addRow("Kontonummer:", self.txt_nummer)
         
-        self.txt_nummer = QLineEdit()
-        self.txt_nummer.setPlaceholderText("Optional")
-        form.addRow("Kontonummer / PSP-Element:", self.txt_nummer)
+        self.spin_personal = QDoubleSpinBox(); self.spin_personal.setRange(-99999999.0, 99999999.0)
+        self.spin_personal.setSuffix(" €"); form.addRow("Bestand Personalmittel:", self.spin_personal)
         
-        # NEU: Start-Guthaben / Manueller Kontostand
-        self.spin_guthaben = QDoubleSpinBox()
-        self.spin_guthaben.setRange(-99999999.0, 99999999.0)
-        self.spin_guthaben.setDecimals(2)
-        self.spin_guthaben.setGroupSeparatorShown(True)
-        self.spin_guthaben.setSuffix(" €")
-        form.addRow("Aktueller Kontostand:", self.spin_guthaben)
+        self.spin_sach = QDoubleSpinBox(); self.spin_sach.setRange(-99999999.0, 99999999.0)
+        self.spin_sach.setSuffix(" €"); form.addRow("Bestand Sachmittel:", self.spin_sach)
         
         layout.addLayout(form)
-        
-        info = QLabel("<i>Hinweis: Abgeschlossene Projekte buchen ihren Overhead automatisch auf diesen Kontostand.</i>")
-        info.setStyleSheet("color: gray; font-size: 8pt;")
-        info.setWordWrap(True)
-        layout.addWidget(info)
-        
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.speichern)
-        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.speichern); buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
     def lade_daten(self):
@@ -56,9 +42,9 @@ class KontoBearbeitenDialog(QDialog):
         try:
             k = session.query(InstitutsKonto).filter_by(id=self.konto_id).first()
             if k:
-                self.txt_name.setText(k.name)
-                self.txt_nummer.setText(k.kontonummer or "")
-                self.spin_guthaben.setValue(k.guthaben or 0.0)
+                self.txt_name.setText(k.name); self.txt_nummer.setText(k.kontonummer or "")
+                self.spin_personal.setValue(k.guthaben_personal or 0.0)
+                self.spin_sach.setValue(k.guthaben_sachmittel or 0.0)
         finally:
             session.close()
 
@@ -68,24 +54,24 @@ class KontoBearbeitenDialog(QDialog):
         try:
             k = session.query(InstitutsKonto).filter_by(id=self.konto_id).first() if self.konto_id else InstitutsKonto()
             if not self.konto_id: session.add(k)
-                
             k.name = self.txt_name.text().strip()
             k.kontonummer = self.txt_nummer.text().strip()
             
-            # NEU: Differenz berechnen und als Buchung ablegen
-            alter_stand = k.guthaben or 0.0
-            neuer_stand = self.spin_guthaben.value()
-            differenz = neuer_stand - alter_stand
+            alter_pers = k.guthaben_personal or 0.0
+            alter_sach = k.guthaben_sachmittel or 0.0
+            neuer_pers = self.spin_personal.value()
+            neuer_sach = self.spin_sach.value()
             
-            if differenz != 0:
-                buchung = KontoBuchung(
-                    konto=k,
-                    datum=date.today(),
-                    beschreibung="Manuelle Anpassung / Startsaldo",
-                    betrag=differenz
-                )
-                session.add(buchung)
-                k.guthaben = neuer_stand
+            diff_pers = neuer_pers - alter_pers
+            diff_sach = neuer_sach - alter_sach
+            
+            if diff_pers != 0:
+                session.add(KontoBuchung(konto=k, datum=date.today(), beschreibung="Manuelle Anpassung (Personalmittel)", betrag=diff_pers))
+            if diff_sach != 0:
+                session.add(KontoBuchung(konto=k, datum=date.today(), beschreibung="Manuelle Anpassung (Sachmittel)", betrag=diff_sach))
+            
+            k.guthaben_personal = neuer_pers
+            k.guthaben_sachmittel = neuer_sach
             
             session.commit()
             self.accept()
@@ -193,7 +179,7 @@ class StammdatenView(QWidget):
         btn_k_neu = QPushButton("➕ Neues Konto"); btn_k_neu.clicked.connect(self.neu_konto)
         btn_k_edit = QPushButton("✏️ Bearbeiten"); btn_k_edit.clicked.connect(self.edit_konto)
         btn_k_del = QPushButton("🗑️ Löschen"); btn_k_del.clicked.connect(self.del_konto)
-        btn_k_hist = QPushButton("📜 Historie / Kontoauszug"); btn_k_hist.clicked.connect(self.show_historie) # NEU
+        btn_k_hist = QPushButton("📜 Historie / Kontoauszug"); btn_k_hist.clicked.connect(self.show_historie)
         btn_k_umbuchung = QPushButton("🔄 Umbuchung"); btn_k_umbuchung.clicked.connect(self.umbuchen)
         
         tool_k.addWidget(btn_k_neu); tool_k.addWidget(btn_k_edit); tool_k.addWidget(btn_k_del)
@@ -201,12 +187,12 @@ class StammdatenView(QWidget):
         lay_konten.addLayout(tool_k)
         
         self.tab_konten = QTableWidget()
-        # NEU: Spalte für den Kontostand eingefügt
-        self.tab_konten.setColumnCount(4)
-        self.tab_konten.setHorizontalHeaderLabels(["ID", "Kontoname / Topf", "Kontonummer", "Aktueller Kontostand"])
+        self.tab_konten.setColumnCount(5) # Korrigiert auf 5
+        self.tab_konten.setHorizontalHeaderLabels(["ID", "Kontoname / Topf", "Kontonummer", "Personalmittel (€)", "Sachmittel (€)"])
         self.tab_konten.setColumnHidden(0, True)
         self.tab_konten.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.tab_konten.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.tab_konten.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.tab_konten.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.tab_konten.doubleClicked.connect(self.edit_konto)
         lay_konten.addWidget(self.tab_konten)
@@ -214,9 +200,9 @@ class StammdatenView(QWidget):
         splitter.addWidget(grp_konten)
         
         # --- REGEL VERWALTUNG ---
+        # (Bleibt identisch)
         grp_regeln = QGroupBox("Overhead-Regelsets")
         lay_regeln = QVBoxLayout(grp_regeln)
-        
         tool_r = QHBoxLayout()
         btn_r_neu = QPushButton("➕ Neue Regel"); btn_r_neu.clicked.connect(self.neu_regel)
         btn_r_edit = QPushButton("✏️ Bearbeiten"); btn_r_edit.clicked.connect(self.edit_regel)
@@ -247,12 +233,17 @@ class StammdatenView(QWidget):
                 self.tab_konten.setItem(r, 1, QTableWidgetItem(k.name))
                 self.tab_konten.setItem(r, 2, QTableWidgetItem(k.kontonummer or "-"))
                 
-                # NEU: Kontostand formatiert einfügen
-                guthaben = k.guthaben or 0.0
-                g_str = f"{guthaben:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
-                item_g = QTableWidgetItem(g_str)
-                item_g.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self.tab_konten.setItem(r, 3, item_g)
+                # Getrennte Guthaben abrufen
+                g_pers = k.guthaben_personal or 0.0
+                g_sach = k.guthaben_sachmittel or 0.0
+                
+                item_p = QTableWidgetItem(f"{g_pers:,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
+                item_p.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.tab_konten.setItem(r, 3, item_p)
+                
+                item_s = QTableWidgetItem(f"{g_sach:,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
+                item_s.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.tab_konten.setItem(r, 4, item_s)
                 
             self.tab_regeln.setRowCount(0)
             for reg in session.query(OverheadRegel).order_by(OverheadRegel.name).all():
@@ -447,7 +438,7 @@ class KontoUmbuchungDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Umbuchung zwischen Instituts-Konten")
-        self.resize(450, 250)
+        self.resize(500, 280)
         self.konten_cache = []
         self.setup_ui()
         self.load_konten()
@@ -455,6 +446,10 @@ class KontoUmbuchungDialog(QDialog):
     def setup_ui(self):
         layout = QVBoxLayout(self)
         form = QFormLayout()
+        
+        self.combo_topf = QComboBox()
+        self.combo_topf.addItems(["Personalmittel", "Sachmittel"])
+        form.addRow("Welcher Budget-Topf?:", self.combo_topf)
         
         self.combo_quelle = QComboBox()
         form.addRow("Von Konto (Quelle):", self.combo_quelle)
@@ -485,7 +480,9 @@ class KontoUmbuchungDialog(QDialog):
         try:
             self.konten_cache = session.query(InstitutsKonto).order_by(InstitutsKonto.name).all()
             for k in self.konten_cache:
-                text = f"{k.name} ({k.guthaben or 0.0:,.2f} €)".replace(",", "X").replace(".", ",").replace("X", ".")
+                p_val = k.guthaben_personal or 0.0
+                s_val = k.guthaben_sachmittel or 0.0
+                text = f"{k.name} (Pers: {p_val:,.0f} € | Sach: {s_val:,.0f} €)".replace(",", "X").replace(".", ",").replace("X", ".")
                 self.combo_quelle.addItem(text, k.id)
                 self.combo_ziel.addItem(text, k.id)
         finally:
@@ -496,6 +493,7 @@ class KontoUmbuchungDialog(QDialog):
         z_id = self.combo_ziel.currentData()
         betrag = self.spin_betrag.value()
         zweck = self.txt_zweck.text().strip()
+        topf = self.combo_topf.currentText()
         
         if q_id == z_id:
             QMessageBox.warning(self, "Fehler", "Quell- und Zielkonto dürfen nicht identisch sein.")
@@ -511,21 +509,24 @@ class KontoUmbuchungDialog(QDialog):
             konto_z = session.query(InstitutsKonto).filter_by(id=z_id).first()
             
             # Abbuchung (Quelle)
-            konto_q.guthaben = (konto_q.guthaben or 0.0) - betrag
+            if topf == "Personalmittel":
+                konto_q.guthaben_personal = (konto_q.guthaben_personal or 0.0) - betrag
+                konto_z.guthaben_personal = (konto_z.guthaben_personal or 0.0) + betrag
+            else:
+                konto_q.guthaben_sachmittel = (konto_q.guthaben_sachmittel or 0.0) - betrag
+                konto_z.guthaben_sachmittel = (konto_z.guthaben_sachmittel or 0.0) + betrag
+                
             buchung_q = KontoBuchung(
-                konto=konto_q,
-                datum=date.today(),
-                beschreibung=f"Umbuchung an '{konto_z.name}': {zweck}",
+                konto=konto_q, datum=date.today(),
+                beschreibung=f"Umbuchung an '{konto_z.name}' ({topf}): {zweck}",
                 betrag=-betrag
             )
             session.add(buchung_q)
             
             # Zubuchung (Ziel)
-            konto_z.guthaben = (konto_z.guthaben or 0.0) + betrag
             buchung_z = KontoBuchung(
-                konto=konto_z,
-                datum=date.today(),
-                beschreibung=f"Umbuchung von '{konto_q.name}': {zweck}",
+                konto=konto_z, datum=date.today(),
+                beschreibung=f"Umbuchung von '{konto_q.name}' ({topf}): {zweck}",
                 betrag=betrag
             )
             session.add(buchung_z)
@@ -536,4 +537,4 @@ class KontoUmbuchungDialog(QDialog):
             session.rollback()
             QMessageBox.critical(self, "Fehler", str(e))
         finally:
-            session.close()            
+            session.close()

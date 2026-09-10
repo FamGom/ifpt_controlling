@@ -12,6 +12,10 @@ from gui.views.view_settings import SettingsView
 from gui.views.view_vakanzen import VakanzenView
 from gui.views.view_ausgaben import AusgabenView
 from gui.views.view_stammdaten import StammdatenView    
+#from core.models import ProjektStatus, OverheadRegel, InstitutsKonto, Projekt
+from gui.views.view_dashboard import InstitutsDashboardView  # Import der neuen Dashboard-Ansicht
+
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -37,6 +41,8 @@ class MainWindow(QMainWindow):
         self.tab_settings = SettingsView()
         self.tab_stammdaten = StammdatenView()  # Neue Ansicht für Stammdaten
 
+        self.tab_dashboard = InstitutsDashboardView()
+        self.tabs.insertTab(0, self.tab_dashboard, "📈 Instituts-Dashboard")
 
         # Tabs dem Fenster in logischer Prozess-Reihenfolge hinzufügen
         self.tabs.addTab(self.tab_controlling, "📊 Controlling & Dashboards")

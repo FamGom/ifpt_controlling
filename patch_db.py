@@ -74,9 +74,21 @@ def patch_guthaben():
             print("Fehler oder Spalte existiert bereits:")
             print(e)
 
+def patch_database_guthabensplit():
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE instituts_konto ADD COLUMN guthaben_personal FLOAT DEFAULT 0.0"))
+            conn.execute(text("ALTER TABLE instituts_konto ADD COLUMN guthaben_sachmittel FLOAT DEFAULT 0.0"))
+            # Übertrage altes Guthaben in Sachmittel (Sicherheit), danach alte Spalte ignorieren
+            conn.execute(text("UPDATE instituts_konto SET guthaben_sachmittel = guthaben"))
+            conn.commit()
+            print("✅ Konten erfolgreich in Personal- und Sachmittel gesplittet!")
+        except Exception as e:
+            print("Fehler (oder bereits ausgeführt):", e)            
+
 if __name__ == "__main__":
     #patch_database()
     #patch_database2()
     #patch_guthaben()
-    patch_buchungen()
+    patch_database_guthabensplit()
     

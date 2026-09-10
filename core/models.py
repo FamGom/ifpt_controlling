@@ -210,7 +210,9 @@ class InstitutsKonto(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False) # z.B. "Rücklage Industrie"
     kontonummer = Column(String, nullable=True)
-    guthaben = Column(Float, default=0.0) # <--- NEU: Das physische Sparbuch
+    # NEU: Physische Trennung der Geldtöpfe
+    guthaben_personal = Column(Float, default=0.0)
+    guthaben_sachmittel = Column(Float, default=0.0)
      
     projekte = relationship("Projekt", back_populates="ziel_konto")
     buchungen = relationship("KontoBuchung", back_populates="konto", cascade="all, delete-orphan")
