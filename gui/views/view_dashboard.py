@@ -51,9 +51,15 @@ class InstitutsDashboardView(QWidget):
         self.kpi_layout = QHBoxLayout()
         main_layout.addLayout(self.kpi_layout)
         
+        # --- NOTFALL-HINWEIS (NEU) ---
+        self.lbl_notfall = QLabel()
+        self.lbl_notfall.setStyleSheet("color: #7F8C8D; font-style: italic; margin-top: -5px; margin-bottom: 10px;")
+        self.lbl_notfall.setVisible(False)
+        main_layout.addWidget(self.lbl_notfall)
+        
         # --- TABELLE ---
         lbl_watch = QLabel("Projekt-Analyse (Personalbudgets x Wahrscheinlichkeit)")
-        lbl_watch.setStyleSheet("font-weight: bold; font-size: 14px; margin-top: 15px;")
+        lbl_watch.setStyleSheet("font-weight: bold; font-size: 14px; margin-top: 5px;")
         main_layout.addWidget(lbl_watch)
         
         self.table = QTableWidget()
@@ -94,27 +100,30 @@ class InstitutsDashboardView(QWidget):
             color_rs = "#E74C3C" if data['runway_base_strict'] < 12 else "#27AE60"
             self.kpi_layout.addWidget(KPIFrame("HR-Runway (Strikt)", rs_b, rs_o, color_rs))
             
-            # KPI 2: Runway Flex
-            rf_b = f"{data['runway_base_flex']:.1f} M" if data['runway_base_flex'] < 72 else "> 6 J"
-            rf_o = f"{data['runway_opt_flex']:.1f} M" if data['runway_opt_flex'] < 72 else "> 6 J"
-            color_rf = "#E74C3C" if data['runway_base_flex'] < 12 else "#2980B9"
-            self.kpi_layout.addWidget(KPIFrame("HR-Runway (20% Überziehen)", rf_b, rf_o, color_rf))
-            
-            # KPI 3: Lücke STRIKT
+            # KPI 2: Lücke STRIKT 
             ls_b = self.format_gap(data["gap_base_strict"])
             ls_o = self.format_gap(data["gap_opt_strict"])
             color_ls = "#E74C3C" if data["gap_base_strict"] > 0 else "#27AE60"
             self.kpi_layout.addWidget(KPIFrame("12M-Bilanz (Strikt)", ls_b, ls_o, color_ls))
             
-            # KPI 4: Lücke FLEX
+            # KPI 3: Lücke FLEX
             lf_b = self.format_gap(data["gap_base_flex"])
             lf_o = self.format_gap(data["gap_opt_flex"])
             color_lf = "#E74C3C" if data["gap_base_flex"] > 0 else "#27AE60"
             self.kpi_layout.addWidget(KPIFrame("12M-Bilanz (20% Überziehen)", lf_b, lf_o, color_lf))
             
+            # --- NEU: Dezenten Notfall-Puffer anzeigen ---
+            pm_monate = data.get("reserve_pm_monate", 0.0)
+            res_pers = data.get("reserve_personal", 0.0)
+            if pm_monate > 0 or res_pers > 0:
+                self.lbl_notfall.setText(f"ℹ️ Unberührte Notfall-Rücklagen (Nicht im Forecast verrechnet): {self.format_euro(res_pers)} Instituts-Personalmittel | {pm_monate:.1f} PM Drittmittel-Vakanzen")
+                self.lbl_notfall.setVisible(True)
+            else:
+                self.lbl_notfall.setVisible(False)
+            
             # Tabelle befüllen
             self.table.setRowCount(0)
-            for p in data["analysen"]:
+            for p in data.get("analysen", []):
                 r = self.table.rowCount()
                 self.table.insertRow(r)
                 
@@ -128,8 +137,11 @@ class InstitutsDashboardView(QWidget):
                     item_rest.setForeground(QColor("red"))
                     font = QFont(); font.setBold(True); item_rest.setFont(font)
                 self.table.setItem(r, 4, item_rest)
+                
                 self.table.setItem(r, 5, QTableWidgetItem(p["status_text"]))
                 
             self.table.resizeRowsToContents()
         finally:
             session.close()
+
+            

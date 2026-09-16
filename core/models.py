@@ -213,6 +213,7 @@ class InstitutsKonto(Base):
     # NEU: Physische Trennung der Geldtöpfe
     guthaben_personal = Column(Float, default=0.0)
     guthaben_sachmittel = Column(Float, default=0.0)
+    guthaben_pm = Column(Float, default=0.0) # NEU: Personenmonate (Drittmittelbedingte Vakanzen)
      
     projekte = relationship("Projekt", back_populates="ziel_konto")
     buchungen = relationship("KontoBuchung", back_populates="konto", cascade="all, delete-orphan")
@@ -241,3 +242,16 @@ class KontoBuchung(Base):
     betrag = Column(Float, nullable=False)
     
     konto = relationship("InstitutsKonto", back_populates="buchungen")
+
+class Vakanz(Base):
+    """Geplante, aber noch nicht besetzte Stellen für den HR-Forecast."""
+    __tablename__ = 'vakanz'
+    id = Column(Integer, primary_key=True)
+    bezeichnung = Column(String, nullable=False) # z.B. "Post-Doc Robotik"
+    geplanter_start = Column(Date, nullable=False)
+    laufzeit_monate = Column(Integer, default=12)
+    wahrscheinlichkeit_pct = Column(Float, default=100.0)
+    
+    tarif_id = Column(Integer, ForeignKey('tarif_tabelle.id'), nullable=True)
+    arbeitszeit_pct = Column(Float, default=1.0) # 1.0 = 100% Vollzeit
+    projekt_id = Column(Integer, ForeignKey('projekt.id'), nullable=True)

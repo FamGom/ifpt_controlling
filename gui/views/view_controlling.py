@@ -43,7 +43,6 @@ class FinanzControllingWidget(QWidget):
         header_layout.addWidget(refresh_btn)
         layout.addLayout(header_layout)
 
-        # --- NEU: DYNAMISCHE TOPF-FILTER ---
         filter_layout = QHBoxLayout()
         filter_layout.addWidget(QLabel("<b>Einberechnete Budget-Töpfe:</b>"))
         
@@ -65,10 +64,11 @@ class FinanzControllingWidget(QWidget):
         widget_gesamt = QWidget()
         layout_gesamt = QVBoxLayout(widget_gesamt)
         layout_gesamt.setContentsMargins(0, 10, 0, 0)
-        layout_gesamt.addWidget(QLabel("<b>Ansicht 1: Gesamt-Budget über gesamte Projektlaufzeit (Gefiltert)</b>"))
+        layout_gesamt.addWidget(QLabel("<b>Ansicht 1: Gesamt-Budget über Laufzeit (Gefiltert)</b>"))
         
         self.table_gesamt = QTableWidget()
-        spalten_gesamt = ["Projekt", "Budget gesamt", "Ist-Kosten", "Obligo", "Plan-Ausgaben", "Verfügbar", "Verfügbar %"]
+        # NEU: Spalte Overhead hinzugefügt
+        spalten_gesamt = ["Projekt", "Budget gesamt", "Ist-Kosten", "Obligo", "Plan-Ausgaben", "Verfügbar", "Verfügbar %", "Erwirtschafteter Overhead"]
         self.table_gesamt.setColumnCount(len(spalten_gesamt))
         self.table_gesamt.setHorizontalHeaderLabels(spalten_gesamt)
         self.table_gesamt.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -136,7 +136,6 @@ class FinanzControllingWidget(QWidget):
             session.close()
 
     def render_tables(self):
-        """Wendet die Checkbox-Filter auf die geladenen Daten an und befüllt die Tabellen blitzschnell neu."""
         self.table_gesamt.setRowCount(0)
         self.table_jahr.setRowCount(0)
         
@@ -155,14 +154,12 @@ class FinanzControllingWidget(QWidget):
         for projekt, report in zip(self.aktuelle_projekte, self.aktuelle_reports):
             if not projekt.projektbeginn or not projekt.projektende: continue
             
-            # --- DYNAMISCHES BUDGET (Nur aktive Töpfe) ---
             dyn_budget = 0.0
             if "e13_15" in active_pots: dyn_budget += (projekt.personalbudget_e13_e15 or 0.0)
             if "e1_12" in active_pots: dyn_budget += (projekt.personalbudget_e1_e12 or 0.0)
             if "hiwi" in active_pots: dyn_budget += (projekt.personalbudget_besch_entgelt or 0.0)
             if "sachmittel" in active_pots: dyn_budget += (projekt.sachmittelbudget or 0.0)
             
-            # --- DYNAMISCHE KOSTEN ---
             dyn_ist = 0.0
             dyn_obligo = 0.0
             dyn_plan = 0.0
@@ -178,11 +175,13 @@ class FinanzControllingWidget(QWidget):
             dyn_pct = (dyn_verfuegbar / dyn_budget * 100.0) if dyn_budget > 0 else 0.0
 
             # --- INSERT TABELLE 1 (Gesamt) ---
-            # Projekte mit 0€ in den gewählten Töpfen direkt ausblenden (hält die Tabelle sauber)
             if dyn_budget > 0 or dyn_ist > 0 or dyn_obligo > 0:
                 row_idx = self.table_gesamt.rowCount()
                 self.table_gesamt.insertRow(row_idx)
                 self.table_gesamt.setItem(row_idx, 0, QTableWidgetItem(projekt.projektname))
+                
+                # Der Overhead ist eine absolute Projektzahl, unbeeinflusst von den Checkboxen
+                overhead_val = report.get("erwirtschafteter_overhead", 0.0)
                 
                 werte_gesamt = [
                     self.format_currency(dyn_budget),
@@ -190,12 +189,20 @@ class FinanzControllingWidget(QWidget):
                     self.format_currency(dyn_obligo),
                     self.format_currency(dyn_plan),
                     self.format_currency(dyn_verfuegbar),
-                    f"{dyn_pct:.1f} %"
+                    f"{dyn_pct:.1f} %",
+                    self.format_currency(overhead_val) # NEU
                 ]
+                
                 for col_idx, wert in enumerate(werte_gesamt, start=1):
                     item = QTableWidgetItem(wert)
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                    if col_idx == 5 and dyn_verfuegbar < 0: item.setForeground(Qt.GlobalColor.red)
+                    
+                    if col_idx == 5 and dyn_verfuegbar < 0: 
+                        item.setForeground(Qt.GlobalColor.red)
+                    elif col_idx == 7 and overhead_val > 0: # Overhead hervorheben
+                        item.setForeground(QColor("#D35400"))
+                        font = item.font(); font.setBold(True); item.setFont(font)
+                        
                     self.table_gesamt.setItem(row_idx, col_idx, item)
 
             # --- DYNAMISCHE JAHRESSCHEIBE (TABELLE 2) ---
@@ -241,7 +248,6 @@ class FinanzControllingWidget(QWidget):
             budget_verfuegbar_jahr = initiales_jahresbudget + vorjahresuebertrag
             restmittel_jahr = budget_verfuegbar_jahr - ist_und_obligo_jahr
             
-            # Auch hier: Nur anzeigen, wenn das Projekt im gewählten Jahr im gewählten Topf Budget oder Kosten hat
             if initiales_jahresbudget > 0 or ist_und_obligo_jahr > 0 or vorjahresuebertrag != 0:
                 row_idx2 = self.table_jahr.rowCount()
                 self.table_jahr.insertRow(row_idx2)
@@ -262,7 +268,7 @@ class FinanzControllingWidget(QWidget):
                         item.setForeground(Qt.GlobalColor.red)
                     self.table_jahr.setItem(row_idx2, col_idx, item)
 
-    
+
 # ==========================================
 # MODUL 2: PERSONAL-CONTROLLING (Soll vs. Ist)
 # ==========================================
@@ -899,6 +905,7 @@ class SzenarioGraphWidget(QWidget):
         ausgaben_plan = {m: 0.0 for m in alle_monate} 
         ausgaben_6j = {m: 0.0 for m in alle_monate}   
         
+        # Startkapital ist auf operativer Ebene strikt 0
         start_kapital = 0.0 
         start_kosten = 0.0  
         
@@ -1020,17 +1027,17 @@ class SzenarioGraphWidget(QWidget):
             netto_verlauf.append(kumuliert_budget - kumuliert_kosten)
             
         ax.plot(alle_monate, [0]*len(alle_monate), color="black", linewidth=2, zorder=3)
-        ax.plot(alle_monate, netto_verlauf, label="Netto-Deckungsmasse (Liquidität)", color="#2C3E50", linewidth=3, zorder=4)
+        ax.plot(alle_monate, netto_verlauf, label="Netto-Deckungsmasse (Reines Projektgeschäft)", color="#2C3E50", linewidth=3, zorder=4)
         
         ax.fill_between(alle_monate, 0, netto_verlauf, where=[n >= 0 for n in netto_verlauf], color="#27AE60", alpha=0.3, interpolate=True, label="Überdeckung (Puffer)")
         ax.fill_between(alle_monate, 0, netto_verlauf, where=[n < 0 for n in netto_verlauf], color="#E74C3C", alpha=0.4, interpolate=True, label="Unterdeckung (Fehlbetrag)")
         
-        ax.set_title("Szenario: Instituts-Liquidität")
+        ax.set_title("Szenario: Instituts-Liquidität (Ohne Notfall-Rücklagen)")
         ax.set_ylabel("Euro (€)")
         ax.grid(True, linestyle=":", alpha=0.7)
         
         # ==========================================
-        # NEU: Intelligente X-Achsen-Formatierung
+        # Intelligente X-Achsen-Formatierung
         # ==========================================
         step = 1
         if len(alle_monate) > 24: step = 2
@@ -1042,7 +1049,6 @@ class SzenarioGraphWidget(QWidget):
         
         for i in x_ticks:
             m_str, y_str = alle_monate[i].split('/')
-            # Jahr nur beim allerersten Eintrag oder im Januar anzeigen
             if m_str == "01" or i == 0:
                 x_labels.append(f"{m_str}\n{y_str}")
             else:

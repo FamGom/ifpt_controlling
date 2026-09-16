@@ -26,11 +26,16 @@ class KontoBearbeitenDialog(QDialog):
         self.txt_name = QLineEdit(); form.addRow("Kontoname:", self.txt_name)
         self.txt_nummer = QLineEdit(); form.addRow("Kontonummer:", self.txt_nummer)
         
-        self.spin_personal = QDoubleSpinBox(); self.spin_personal.setRange(-99999999.0, 99999999.0)
-        self.spin_personal.setSuffix(" €"); form.addRow("Bestand Personalmittel:", self.spin_personal)
+        self.spin_personal = QDoubleSpinBox(); self.spin_personal.setRange(-99999999.0, 99999999.0); self.spin_personal.setSuffix(" €")
+        form.addRow("Bestand Personalmittel:", self.spin_personal)
         
-        self.spin_sach = QDoubleSpinBox(); self.spin_sach.setRange(-99999999.0, 99999999.0)
-        self.spin_sach.setSuffix(" €"); form.addRow("Bestand Sachmittel:", self.spin_sach)
+        self.spin_sach = QDoubleSpinBox(); self.spin_sach.setRange(-99999999.0, 99999999.0); self.spin_sach.setSuffix(" €")
+        form.addRow("Bestand Sachmittel:", self.spin_sach)
+        
+        # NEU: Personenmonate (PM)
+        self.spin_pm = QDoubleSpinBox(); self.spin_pm.setRange(-9999.0, 9999.0); self.spin_pm.setSuffix(" PM")
+        self.spin_pm.setToolTip("Drittmittelbedingte Vakanzen / Alt-Vakanzen in Personenmonaten.")
+        form.addRow("Guthaben Vakanzen (Personenmonate):", self.spin_pm)
         
         layout.addLayout(form)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
@@ -45,6 +50,7 @@ class KontoBearbeitenDialog(QDialog):
                 self.txt_name.setText(k.name); self.txt_nummer.setText(k.kontonummer or "")
                 self.spin_personal.setValue(k.guthaben_personal or 0.0)
                 self.spin_sach.setValue(k.guthaben_sachmittel or 0.0)
+                self.spin_pm.setValue(k.guthaben_pm or 0.0) # NEU
         finally:
             session.close()
 
@@ -57,24 +63,11 @@ class KontoBearbeitenDialog(QDialog):
             k.name = self.txt_name.text().strip()
             k.kontonummer = self.txt_nummer.text().strip()
             
-            alter_pers = k.guthaben_personal or 0.0
-            alter_sach = k.guthaben_sachmittel or 0.0
-            neuer_pers = self.spin_personal.value()
-            neuer_sach = self.spin_sach.value()
+            k.guthaben_personal = self.spin_personal.value()
+            k.guthaben_sachmittel = self.spin_sach.value()
+            k.guthaben_pm = self.spin_pm.value() # NEU
             
-            diff_pers = neuer_pers - alter_pers
-            diff_sach = neuer_sach - alter_sach
-            
-            if diff_pers != 0:
-                session.add(KontoBuchung(konto=k, datum=date.today(), beschreibung="Manuelle Anpassung (Personalmittel)", betrag=diff_pers))
-            if diff_sach != 0:
-                session.add(KontoBuchung(konto=k, datum=date.today(), beschreibung="Manuelle Anpassung (Sachmittel)", betrag=diff_sach))
-            
-            k.guthaben_personal = neuer_pers
-            k.guthaben_sachmittel = neuer_sach
-            
-            session.commit()
-            self.accept()
+            session.commit(); self.accept()
         except Exception as e:
             session.rollback()
         finally:
@@ -187,8 +180,8 @@ class StammdatenView(QWidget):
         lay_konten.addLayout(tool_k)
         
         self.tab_konten = QTableWidget()
-        self.tab_konten.setColumnCount(5) # Korrigiert auf 5
-        self.tab_konten.setHorizontalHeaderLabels(["ID", "Kontoname / Topf", "Kontonummer", "Personalmittel (€)", "Sachmittel (€)"])
+        self.tab_konten.setColumnCount(6) # Korrigiert auf 6
+        self.tab_konten.setHorizontalHeaderLabels(["ID", "Kontoname / Topf", "Kontonummer", "Personalmittel (€)", "Sachmittel (€)", "PM-Vakanzen (Monate)"])
         self.tab_konten.setColumnHidden(0, True)
         self.tab_konten.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.tab_konten.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
@@ -254,6 +247,7 @@ class StammdatenView(QWidget):
                 self.tab_regeln.setItem(r, 2, QTableWidgetItem(f"{reg.gesamt_pct}%"))
                 self.tab_regeln.setItem(r, 3, QTableWidgetItem(f"{reg.institut_pct}%"))
                 self.tab_regeln.setItem(r, 4, QTableWidgetItem(f"{reg.verwaltung_pct}%"))
+                self.tab_konten.setItem(r, 5, QTableWidgetItem(f"{k.guthaben_pm or 0.0} PM"))
         finally:
             session.close()
 

@@ -4,60 +4,6 @@ from datetime import date
 from core.models import Projekt, Zuweisung, ZuweisungsTyp, AusgabePosition, AusgabenStatus, Kostenart, KontoBuchung, ProjektStatus, AusgabeKopf, InstitutsKonto, OverheadRegel
 from core.journal import generiere_mitarbeiter_lohnjournal
 
-def generiere_instituts_controlling(session):
-    """
-    Erzeugt die Makro-Ansicht (Top-Down) für die Institutsleitung.
-    Aggregiert alle Kontostände, laufenden Projekte und den globalen Forecast.
-    """
-    # 1. Globale Liquidität (Rücklagen)
-    konten = session.query(InstitutsKonto).all()
-    summe_guthaben = sum(k.guthaben or 0.0 for k in konten)
-    
-    # 2. Laufende Projekte aggregieren
-    aktive_projekte = session.query(Projekt).filter(
-        Projekt.status.in_([ProjektStatus.BEWILLIGT, ProjektStatus.BEANTRAGT])
-    ).all()
-    
-    global_budget = 0.0
-    global_ist = 0.0
-    global_obligo = 0.0
-    global_plan = 0.0
-    global_overhead_potenzial = 0.0
-    
-    projekt_kpis = []
-    
-    for p in aktive_projekte:
-        # Wir nutzen die bereits perfekte Einzel-Berechnung
-        report = generiere_projekt_controlling(session, p.id)
-        
-        global_budget += report["budget_gesamt"]
-        global_ist += report["ist_kosten_cf"]
-        global_obligo += report["obligo"]
-        global_plan += report["plan_kosten"]
-        global_overhead_potenzial += report.get("erwirtschafteter_overhead", 0.0)
-        
-        projekt_kpis.append({
-            "name": p.projektname,
-            "status": p.status.value,
-            "budget": report["budget_gesamt"],
-            "verfuegbar": report["verfuegbare_mittel"],
-            "overhead": report.get("erwirtschafteter_overhead", 0.0)
-        })
-        
-    global_verfuegbar = global_budget - global_ist - global_obligo - global_plan
-        
-    return {
-        "liquiditaet_konten": summe_guthaben,
-        "anzahl_aktiv": len(aktive_projekte),
-        "global_budget": global_budget,
-        "global_ist": global_ist,
-        "global_obligo": global_obligo,
-        "global_plan": global_plan,
-        "global_verfuegbar": global_verfuegbar,
-        "global_overhead_potenzial": global_overhead_potenzial,
-        "projekte": sorted(projekt_kpis, key=lambda x: x["verfuegbar"]) # Sortiert: Kritische zuerst
-    }
-
 def generiere_projekt_controlling(session, projekt_id, stichtag=None):
     """
     Kombiniert die exakten HR-Lohnjournale mit dem Sachmittel-/Ausgaben-Journal.
@@ -318,9 +264,10 @@ def generiere_instituts_controlling(session):
     
     heute = date.today()
     
-    # 1. Verfügbare Reserve (Sparbücher Personal)
+    # 1. Reserven einsammeln (werden NICHT mehr verrechnet, nur weitergegeben)
     konten = session.query(InstitutsKonto).all()
     reserve_personal = sum(k.guthaben_personal or 0.0 for k in konten)
+    reserve_pm_monate = sum(k.guthaben_pm or 0.0 for k in konten)
     
     aktive_projekte = session.query(Projekt).filter(
         Projekt.status.in_([ProjektStatus.BEWILLIGT, ProjektStatus.BEANTRAGT])
@@ -328,10 +275,11 @@ def generiere_instituts_controlling(session):
     
     projekt_analysen = []
     
-    # 2. Projekt-Analysen für die Tabelle generieren (Alle Projekte!)
+    # 2. Projekt-Analysen für die Tabelle generieren
     for p in aktive_projekte:
         prob = 1.0 if p.status == ProjektStatus.BEWILLIGT else (p.bewilligungswahrscheinlichkeit_pct or 0.0) / 100.0
-        report = generiere_projekt_controlling(session, p.id, stichtag=heute)
+        try: report = generiere_projekt_controlling(session, p.id, stichtag=heute)
+        except ValueError: continue
         
         ist_e13 = ist_e1 = ist_hiwi = 0.0
         for m_data in report["monats_verlauf"]:
@@ -374,7 +322,7 @@ def generiere_instituts_controlling(session):
                 else: kosten_12m["e1_12"] += k
         except Exception: pass
 
-    # 4. Szenarien-Rechner (Garantiert vs. Planung)
+    # 4. Reine operative Szenarien (ohne Puffer!)
     def berechne_szenario(include_beantragt=False):
         b_e13 = b_e1 = b_hiwi = 0.0
         
@@ -382,7 +330,9 @@ def generiere_instituts_controlling(session):
             if p.status == ProjektStatus.BEANTRAGT and not include_beantragt: continue
             prob = 1.0 if p.status == ProjektStatus.BEWILLIGT else (p.bewilligungswahrscheinlichkeit_pct or 0.0) / 100.0
             
-            report = generiere_projekt_controlling(session, p.id, stichtag=heute)
+            try: report = generiere_projekt_controlling(session, p.id, stichtag=heute)
+            except ValueError: continue
+            
             ist_e13 = ist_e1 = ist_hiwi = 0.0
             for m_data in report["monats_verlauf"]:
                 d_ist = m_data["details"]["ist"]
@@ -392,27 +342,24 @@ def generiere_instituts_controlling(session):
             b_e1 += ((p.personalbudget_e1_e12 or 0.0) - ist_e1) * prob
             b_hiwi += ((p.personalbudget_besch_entgelt or 0.0) - ist_hiwi) * prob
 
-        total_budget = b_e13 + b_e1 + b_hiwi + reserve_personal
+        # Budget = NUR Projekte! Keine Sparbücher.
+        total_budget = b_e13 + b_e1 + b_hiwi
         total_kosten = kosten_12m["e13_15"] + kosten_12m["e1_12"] + kosten_12m["hiwi"]
         
-        # Ein negativer Wert bedeutet hier: Überschuss!
         global_diff = total_kosten - total_budget 
 
-        # Lücke 1: Strikte Bindung
         def_e13 = max(0.0, kosten_12m["e13_15"] - b_e13)
         def_e1 = max(0.0, kosten_12m["e1_12"] - b_e1)
         def_hiwi = max(0.0, kosten_12m["hiwi"] - b_hiwi)
-        gap_strict = (def_e13 + def_e1 + def_hiwi) - reserve_personal
-        if gap_strict <= 0: gap_strict = global_diff # Überschuss ausweisen
+        gap_strict = def_e13 + def_e1 + def_hiwi
+        if gap_strict <= 0: gap_strict = global_diff 
 
-        # Lücke 2: 20% Geduldete Überziehung
         uncov_e13 = max(0.0, kosten_12m["e13_15"] - (b_e13 * 1.2))
         uncov_e1 = max(0.0, kosten_12m["e1_12"] - (b_e1 * 1.2))
         uncov_hiwi = max(0.0, kosten_12m["hiwi"] - (b_hiwi * 1.2))
-        gap_flex = max(global_diff, (uncov_e13 + uncov_e1 + uncov_hiwi) - reserve_personal)
+        gap_flex = max(global_diff, (uncov_e13 + uncov_e1 + uncov_hiwi))
         if gap_flex <= 0: gap_flex = global_diff
 
-        # Runway Berechnung
         monthly_burn = total_kosten / 12.0
         if monthly_burn == 0:
             rw_strict = rw_flex = 999.0
@@ -427,19 +374,13 @@ def generiere_instituts_controlling(session):
             rw_hiwi = (b_hiwi / burn_hiwi) if burn_hiwi > 0 else 999.0
             
             rw_strict = min([rw_e13, rw_e1, rw_hiwi])
-            # Reserve auf den zuerst reißenden Topf schlagen
-            fb_strict = burn_e13 if rw_strict == rw_e13 else (burn_e1 if rw_strict == rw_e1 else burn_hiwi)
-            if fb_strict > 0: rw_strict += reserve_personal / fb_strict
             rw_strict = min(rw_strict, global_rw)
 
-            # Flex-Runway
             rw_e13_f = ((b_e13 * 1.2) / burn_e13) if burn_e13 > 0 else 999.0
             rw_e1_f = ((b_e1 * 1.2) / burn_e1) if burn_e1 > 0 else 999.0
             rw_hiwi_f = ((b_hiwi * 1.2) / burn_hiwi) if burn_hiwi > 0 else 999.0
 
             rw_flex = min([rw_e13_f, rw_e1_f, rw_hiwi_f])
-            fb_flex = burn_e13 if rw_flex == rw_e13_f else (burn_e1 if rw_flex == rw_e1_f else burn_hiwi)
-            if fb_flex > 0: rw_flex += reserve_personal / fb_flex
             rw_flex = min(rw_flex, global_rw)
 
         return gap_strict, gap_flex, rw_strict, rw_flex
@@ -452,5 +393,7 @@ def generiere_instituts_controlling(session):
         "runway_opt_strict": rw_opt_strict, "runway_opt_flex": rw_opt_flex,
         "gap_base_strict": gap_base_strict, "gap_base_flex": gap_base_flex,
         "gap_opt_strict": gap_opt_strict, "gap_opt_flex": gap_opt_flex,
+        "reserve_pm_monate": reserve_pm_monate,
+        "reserve_personal": reserve_personal,
         "analysen": sorted(projekt_analysen, key=lambda x: x["hr_remaining"])
     }

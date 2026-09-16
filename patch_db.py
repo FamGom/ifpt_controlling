@@ -87,8 +87,8 @@ def patch_database_guthabensplit():
             print("Fehler (oder bereits ausgeführt):", e)            
 
 if __name__ == "__main__":
-    #patch_database()
-    #patch_database2()
-    #patch_guthaben()
+    patch_database()
+    patch_database2()
+    patch_guthaben()
     patch_database_guthabensplit()
     
