@@ -218,6 +218,7 @@ class StammdatenView(QWidget):
     def load_data(self):
         session = get_session()
         try:
+            # --- 1. KONTEN LADEN ---
             self.tab_konten.setRowCount(0)
             for k in session.query(InstitutsKonto).order_by(InstitutsKonto.name).all():
                 r = self.tab_konten.rowCount()
@@ -229,6 +230,7 @@ class StammdatenView(QWidget):
                 # Getrennte Guthaben abrufen
                 g_pers = k.guthaben_personal or 0.0
                 g_sach = k.guthaben_sachmittel or 0.0
+                g_pm = k.guthaben_pm or 0.0
                 
                 item_p = QTableWidgetItem(f"{g_pers:,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
                 item_p.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -238,6 +240,12 @@ class StammdatenView(QWidget):
                 item_s.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.tab_konten.setItem(r, 4, item_s)
                 
+                # KORREKTUR: Hier gehört die PM-Spalte hin!
+                item_pm = QTableWidgetItem(f"{g_pm:.1f} PM")
+                item_pm.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.tab_konten.setItem(r, 5, item_pm)
+                
+            # --- 2. REGELN LADEN ---
             self.tab_regeln.setRowCount(0)
             for reg in session.query(OverheadRegel).order_by(OverheadRegel.name).all():
                 r = self.tab_regeln.rowCount()
@@ -247,7 +255,6 @@ class StammdatenView(QWidget):
                 self.tab_regeln.setItem(r, 2, QTableWidgetItem(f"{reg.gesamt_pct}%"))
                 self.tab_regeln.setItem(r, 3, QTableWidgetItem(f"{reg.institut_pct}%"))
                 self.tab_regeln.setItem(r, 4, QTableWidgetItem(f"{reg.verwaltung_pct}%"))
-                self.tab_konten.setItem(r, 5, QTableWidgetItem(f"{k.guthaben_pm or 0.0} PM"))
         finally:
             session.close()
 

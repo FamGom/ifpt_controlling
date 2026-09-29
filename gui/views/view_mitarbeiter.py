@@ -570,24 +570,52 @@ class LohnjournalDialog(QDialog):
             writer.setPageOrientation(QPageLayout.Orientation.Landscape)
             writer.setResolution(300)
             
-            layout = QPageLayout(QPageSize(QPageSize.PageSizeId.A4), QPageLayout.Orientation.Landscape, QMarginsF(15, 15, 15, 15), QPageLayout.Unit.Millimeter)
+            # Sehr enge Ränder (5mm)
+            layout = QPageLayout(QPageSize(QPageSize.PageSizeId.A4), QPageLayout.Orientation.Landscape, QMarginsF(5, 5, 5, 5), QPageLayout.Unit.Millimeter)
             writer.setPageLayout(layout)
             
+            # ==========================================
+            # NEU: DYNAMISCHE SPALTENBREITEN BERECHNEN
+            # ==========================================
+            col_max_lens = []
+            # 1. Längen der Tabellenköpfe auslesen
+            for c in range(self.table.columnCount()):
+                header_text = self.table.horizontalHeaderItem(c).text()
+                header_text = header_text.replace("Rückstellungen", "Rückst.").replace("Kosten (inkl. Rückst.)", "Gesamtkosten")
+                col_max_lens.append(max(len(header_text), 3)) # Minimum 3 Zeichen Breite
+                
+            # 2. Alle Datenzeilen durchsuchen und Maxima updaten
+            for r in range(self.table.rowCount()):
+                for c in range(self.table.columnCount()):
+                    item = self.table.item(r, c)
+                    text = item.text() if item else ""
+                    # Wir fügen 1 Zeichen als Puffer für den Rand hinzu
+                    col_max_lens[c] = max(col_max_lens[c], len(text) + 1)
+                    
+            # 3. Zeichenanzahl in relative Prozentbreiten umrechnen
+            total_len = sum(col_max_lens)
+            col_widths_main = [(l / total_len) * 100.0 for l in col_max_lens]
+            
+            # 4. Breiten für die Summen-Tabelle anpassen (Spalte 1 + 2 werden vereint)
+            col_widths_sum = [col_widths_main[0] + col_widths_main[1]] + col_widths_main[2:]
+
+            # HTML generieren
             html = """
             <html>
             <head>
             <style>
-                body { font-family: Arial, sans-serif; color: #000000; font-size: 10pt; }
-                h1 { color: #2C3E50; font-size: 16pt; margin-bottom: 5px; }
-                .info-box { font-size: 10pt; padding: 10px; border: 1px solid #34495E; background-color: #F8F9F9; margin-bottom: 20px; }
-                table { width: 100%; border-collapse: collapse; font-size: 9.5pt; margin-bottom: 20px; page-break-inside: avoid; }
-                th { background-color: #EAEDED; font-weight: bold; border: 1px solid #777; padding: 5px; text-align: right; }
+                body { font-family: 'Helvetica', 'Arial', sans-serif; color: #000000; font-size: 7pt; }
+                h1 { color: #2C3E50; font-size: 14pt; margin-bottom: 5px; }
+                .info-box { font-size: 8pt; padding: 5px; border: 1px solid #34495E; background-color: #F8F9F9; margin-bottom: 10px; }
+                table { border-collapse: collapse; font-size: 7pt; margin-bottom: 15px; page-break-inside: avoid; }
+                th { background-color: #EAEDED; font-weight: bold; border: 1px solid #777; padding: 3px 1px; text-align: right; }
                 th.left { text-align: left; }
-                td { border: 1px solid #777; padding: 5px; text-align: right; }
+                td { border: 1px solid #777; padding: 3px 1px; text-align: right; }
                 td.left { text-align: left; }
                 .sum-row td { background-color: #D6EAF8; font-weight: bold; }
-                .total-row td { background-color: #AED6F1; font-weight: bold; }
-                h2 { color: #2980B9; font-size: 12pt; margin-top: 15px; margin-bottom: 5px; page-break-after: avoid; }
+                .total-row td { background-color: #AED6F1; font-weight: bold; border-top: 1px solid #333; }
+                h2 { color: #2980B9; font-size: 11pt; margin-top: 10px; margin-bottom: 5px; page-break-after: avoid; }
+                nobr { white-space: nowrap; }
             </style>
             </head>
             <body>
@@ -598,7 +626,6 @@ class LohnjournalDialog(QDialog):
             kinder = ma.kinder_anzahl if ma.kinder_anzahl else 0
             vwl = ma.vl_betrag_euro if ma.vl_betrag_euro else 0.0
             
-            # Hole den aktuellen KV-Satz für das PDF Info-Feld
             akt_kv = 1.7
             for kvz in ma.kv_zusatz_verlauf:
                 if kvz.gueltig_ab <= date.today() and (not kvz.gueltig_bis or kvz.gueltig_bis >= date.today()):
@@ -634,10 +661,18 @@ class LohnjournalDialog(QDialog):
 
             for jahr in jahre_html.keys():
                 html += f"<h2>Lohnjournal für das Jahr {jahr}</h2>"
-                html += "<table><thead><tr>"
+                html += "<table width='100%' cellspacing='0' cellpadding='1'><thead><tr>"
+                
+                # Zuweisung der berechneten Breiten
                 for c in range(self.table.columnCount()): 
                     align = " class='left'" if c < 2 else ""
-                    html += f"<th{align}>{self.table.horizontalHeaderItem(c).text()}</th>"
+                    header_text = self.table.horizontalHeaderItem(c).text()
+                    header_text = header_text.replace("Rückstellungen", "Rückst.")
+                    header_text = header_text.replace("Kosten (inkl. Rückst.)", "Gesamtkosten")
+                    
+                    # Dynamische Breite anwenden
+                    w = col_widths_main[c]
+                    html += f"<th{align} width='{w:.2f}%'><nobr>{header_text}</nobr></th>"
                 html += "</tr></thead><tbody>"
 
                 for r, r_type in jahre_html[jahr]:
@@ -647,15 +682,23 @@ class LohnjournalDialog(QDialog):
                         item = self.table.item(r, c)
                         text = item.text() if item else ""
                         align = " class='left'" if c < 2 else ""
-                        html += f"<td{align}>{text}</td>"
+                        html += f"<td{align}><nobr>{text}</nobr></td>"
                     html += "</tr>"
                 html += "</tbody></table>"
             
             html += "<h2>Jahreszusammenfassung & Gesamtsummen</h2>"
-            html += "<table><thead><tr>"
+            html += "<table width='100%' cellspacing='0' cellpadding='1'><thead><tr>"
+            
+            # Zuweisung der berechneten Breiten für die Summentabelle
             for c in range(self.table_summary.columnCount()): 
                 align = " class='left'" if c == 0 else ""
-                html += f"<th{align}>{self.table_summary.horizontalHeaderItem(c).text()}</th>"
+                header_text = self.table_summary.horizontalHeaderItem(c).text()
+                header_text = header_text.replace("Rückstellungen", "Rückst.")
+                header_text = header_text.replace("Kosten (inkl. Rückst.)", "Gesamtkosten")
+                
+                # Dynamische Breite anwenden
+                w = col_widths_sum[c]
+                html += f"<th{align} width='{w:.2f}%'><nobr>{header_text}</nobr></th>"
             html += "</tr></thead><tbody>"
             
             for r in range(self.table_summary.rowCount()):
@@ -665,11 +708,11 @@ class LohnjournalDialog(QDialog):
                     item = self.table_summary.item(r, c)
                     text = item.text() if item else ""
                     align = " class='left'" if c == 0 else ""
-                    html += f"<td{align}>{text}</td>"
+                    html += f"<td{align}><nobr>{text}</nobr></td>"
                 html += "</tr>"
             html += "</tbody></table>"
             
-            html += f"<div style='text-align: right; font-size: 8pt; color: #7F8C8D; margin-top: 30px;'>Erstellt am: {heute_str}</div>"
+            html += f"<div style='text-align: right; font-size: 7pt; color: #7F8C8D; margin-top: 15px;'>Erstellt am: {heute_str}</div>"
             html += "</body></html>"
 
             doc = QTextDocument()
